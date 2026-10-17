@@ -5,7 +5,6 @@ const IpAddress = std.Io.net.IpAddress;
 pub const Key = [17]u8;
 pub const max_text = 45;
 
-/// Port-free identity used by the block table. IPv4-mapped IPv6 matches IPv4.
 pub fn key(address: IpAddress) Key {
     var out: Key = @splat(0);
     switch (unmap(address)) {
@@ -31,7 +30,6 @@ pub fn unmap(address: IpAddress) IpAddress {
     return address;
 }
 
-/// An address this host can send to that reaches a listener bound to `local`.
 pub fn reachable(local: IpAddress) IpAddress {
     return switch (local) {
         .ip4 => |ip4| if (std.mem.allEqual(u8, &ip4.bytes, 0)) .{ .ip4 = .loopback(ip4.port) } else local,
@@ -39,7 +37,6 @@ pub fn reachable(local: IpAddress) IpAddress {
     };
 }
 
-/// Formats the IP without its port, compressing the longest IPv6 zero run.
 pub fn format(address: IpAddress, buffer: *[max_text]u8) []const u8 {
     switch (unmap(address)) {
         .ip4 => |ip4| return std.fmt.bufPrint(buffer, "{d}.{d}.{d}.{d}", .{ ip4.bytes[0], ip4.bytes[1], ip4.bytes[2], ip4.bytes[3] }) catch unreachable,

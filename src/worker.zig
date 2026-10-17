@@ -12,7 +12,6 @@ const Event = host_mod.Event;
 const Command = host_mod.Command;
 const Reason = host_mod.Reason;
 const Profile = bedwire.protocol.Current;
-const PacketKind = bedwire.PacketKind;
 const Callbacks = @typeInfo(@TypeOf(raknet.Server.poll)).@"fn".param_types[2].?;
 
 const Pending = struct { handle: raknet.SendHandle, id: u64 };
@@ -31,10 +30,8 @@ const Slot = struct {
 
 const Outcome = enum { done, stall };
 
-/// Runs on the network thread and owns every transport and session object.
-/// Callbacks from the listener run on this thread too.
 pub const Worker = struct {
-    /// Event bytes held back for each session disconnect and tracked receipt.
+    /// Event space held back for every session disconnect and tracked receipt.
     pub const obligation_bytes = 48;
     const commands_per_turn = 4096;
 
@@ -126,7 +123,6 @@ pub const Worker = struct {
         return self;
     }
 
-    /// Only after run returns, or if it never started.
     pub fn destroy(self: *Worker) void {
         for (self.slots) |*slot| {
             if (slot.live) slot.session.deinit();
@@ -221,7 +217,6 @@ pub const Worker = struct {
         return (self.active + self.receipts + extra) * obligation_bytes;
     }
 
-    /// Ordinary events never eat into the space held for disconnects and receipts.
     fn emit(self: *Worker, event: Event, len: usize) ?[]u8 {
         return self.shared.events.reserve(@backingInt(event), len, self.obligationReserve(0));
     }
@@ -280,7 +275,6 @@ pub const Worker = struct {
         return .{ .slot = slot, .rak = rak };
     }
 
-    /// Protocol and overload failures close at once; the disconnect event follows from the listener.
     fn fail(self: *Worker, slot: *Slot, rak: ?*raknet.Session, reason: Reason) void {
         if (!slot.closing) {
             slot.reason = reason;
@@ -505,7 +499,6 @@ pub const Worker = struct {
         }
     }
 
-    /// Returns whether commands remain queued.
     fn processCommands(self: *Worker) bool {
         const ring = &self.shared.commands;
         defer ring.release();
@@ -517,7 +510,7 @@ pub const Worker = struct {
                 ring.rewind(mark);
                 self.stalled = true;
                 self.shared.wants_events_space.store(true, .seq_cst);
-                // The consumer may have released space before seeing the flag.
+                // PHP may have freed space before it saw the flag.
                 if (self.shared.events.available() < self.obligationReserve(1)) return true;
                 self.shared.wants_events_space.store(false, .seq_cst);
                 self.stalled = false;
@@ -577,16 +570,14 @@ pub const Worker = struct {
         const now_ms = self.clock();
         var iterator = self.blocked.iterator();
         while (iterator.next()) |entry| {
-            if (entry.value_ptr.* > now_ms) continue;
-            self.blocked.removeByPtr(entry.key_ptr);
-            iterator = self.blocked.iterator();
+            if (entry.value_ptr.* <= now_ms) self.blocked.removeByPtr(entry.key_ptr);
         }
     }
 
     fn handleSend(self: *Worker, bytes: []u8) Outcome {
         const id = std.mem.readInt(u64, bytes[0..8], .little);
         const receipt = std.mem.readInt(u64, bytes[8..16], .little);
-        // A receipt always ends in one event, so it needs room before any work starts.
+        // A receipt always ends in an event so make room before doing anything.
         if (receipt != 0 and self.shared.events.available() < self.obligationReserve(1)) return .stall;
 
         const target = self.resolve(id) orelse {
@@ -598,7 +589,7 @@ pub const Worker = struct {
         var total: usize = 0;
         _ = self.gather(bytes, &packets, &count, &total);
 
-        // Queued sends to the same session share one frame; this never waits for more.
+        // Merge sends already queued for this session into one frame.
         if (receipt == 0) {
             const ring = &self.shared.commands;
             while (true) {
@@ -619,7 +610,6 @@ pub const Worker = struct {
         return .done;
     }
 
-    /// Appends a send command's packets if they fit in one frame alongside the rest.
     fn gather(self: *const Worker, bytes: []const u8, packets: *[host_mod.max_packets_per_batch][]const u8, count: *usize, total: *usize) bool {
         var added: usize = 0;
         var offset: usize = 16;
@@ -637,9 +627,6 @@ pub const Worker = struct {
         return true;
     }
 
-    /// Drops packets the session stage does not permit, splitting frames where a
-    /// packet changes the stage. A receipt follows the frame carrying the last
-    /// packet; returns false if that packet was dropped.
     fn sendPackets(self: *Worker, slot: *Slot, rak: *raknet.Session, packets: []const []const u8, receipt: u64) !bool {
         var tracked = false;
         var len: usize = 0;

@@ -1,12 +1,9 @@
-//! Benchmark client: raknet-zig transport and a client Bedwire session, without encryption.
-
 const std = @import("std");
 const bedwire = @import("bedwire");
 const raknet = @import("raknet");
+const packets = @import("packets");
 
-const protocol = bedwire.protocol;
-const Profile = protocol.Current;
-pub const Ecdsa = bedwire.crypto.spki.Ecdsa;
+const Ecdsa = bedwire.crypto.spki.Ecdsa;
 pub const gameplay_id = 1020;
 
 pub const Peer = struct {
@@ -17,7 +14,6 @@ pub const Peer = struct {
     received: usize = 0,
     latencies: ?*std.ArrayList(u64) = null,
 
-    /// Peers on one thread may share a pool; each lease is released before the next.
     pub fn connect(allocator: std.mem.Allocator, io: std.Io, port: u16, pool: *bedwire.BufferPool) !*Peer {
         const self = try allocator.create(Peer);
         errdefer allocator.destroy(self);
@@ -38,8 +34,8 @@ pub const Peer = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn send(self: *Peer, packets: []const []const u8) !void {
-        const frame = try self.session.encode(packets);
+    pub fn send(self: *Peer, batch: []const []const u8) !void {
+        const frame = try self.session.encode(batch);
         defer frame.release();
         try self.rak.send(frame.bytes, .reliable_ordered, 0);
     }
@@ -56,30 +52,27 @@ pub const Peer = struct {
         }
     }
 
-    /// Client half of the login; the server answers with `serverPackets`.
     pub fn login(self: *Peer) !void {
         var storage: [256]u8 = undefined;
-        try self.send(&.{typed(&storage, .{ .request_network_settings = .{ .client_network_version = Profile.protocol_number } })});
+        try self.send(&.{packets.request(&storage)});
         try self.waitFor(1, 5000);
-        try self.send(&.{typed(&storage, .{ .login = .{ .client_network_version = Profile.protocol_number, .connection_request = "bench" } })});
+        try self.send(&.{packets.login(&storage)});
         try self.session.advance(.resource_packs);
         try self.waitFor(2, 5000);
-        try self.send(&.{envelope(&storage, .resource_pack_client_response, .{ .resource_pack_client_response = .{
-            .response = .{ .resource_pack_stack_finished = "resourcepackstackfinished" },
-        } })});
+        try self.send(&.{packets.stackFinished(&storage)});
         try self.session.advance(.waiting_for_start_game);
         try self.waitFor(3, 5000);
         try self.session.advance(.spawn_ready);
-        try self.send(&.{raw(&storage, Profile.packetId(.set_local_player_as_initialised).?, "\x01")});
+        try self.send(&.{packets.raw(&storage, packets.id(.set_local_player_as_initialised), "\x01")});
         try self.session.advance(.in_game);
         self.received = 0;
     }
 
     fn onMessage(context: *anyopaque, payload: raknet.BorrowedPayload) error{ApplicationFailure}!void {
         const self: *Peer = @ptrCast(@alignCast(context));
-        var packets = self.session.ingest(payload.bytes) catch return error.ApplicationFailure;
-        defer packets.deinit();
-        while (packets.next()) |packet| {
+        var batch = self.session.ingest(payload.bytes) catch return error.ApplicationFailure;
+        defer batch.deinit();
+        while (batch.next()) |packet| {
             self.received += 1;
             if (packet.kind == .network_settings) self.session.negotiateFromSettings(packet) catch return error.ApplicationFailure;
             if (self.latencies) |list| if (packet.id == gameplay_id and packet.bytes.len >= 10) {
@@ -90,7 +83,6 @@ pub const Peer = struct {
     }
 };
 
-/// The server packets for each login step, in order.
 pub fn clientPool(allocator: std.mem.Allocator) !bedwire.BufferPool {
     return bedwire.BufferPool.init(allocator, .{
         .max_frame_bytes = 1024 * 1024,
@@ -99,7 +91,6 @@ pub fn clientPool(allocator: std.mem.Allocator) !bedwire.BufferPool {
     }, .{ .rx_slots = 1, .tx_slots = 1 });
 }
 
-/// Every bench peer presents this key; the server only needs its DER form.
 pub fn publicKeyDer() [120]u8 {
     const seed: [Ecdsa.SecretKey.encoded_length]u8 = @splat(7);
     const pair = Ecdsa.KeyPair.fromSecretKey(Ecdsa.SecretKey.fromBytes(seed) catch unreachable) catch unreachable;
@@ -108,26 +99,12 @@ pub fn publicKeyDer() [120]u8 {
 
 pub fn serverPackets(storage: *[3][256]u8) [3][]const u8 {
     return .{
-        envelope(&storage[0], .network_settings, .{ .network_settings = .{
-            .compression_threshold = 256,
-            .compression_algorithm = .zlib,
-            .client_throttle_enabled = false,
-            .client_throttle_threshold = 0,
-            .client_throttle_scalar = 0,
-        } }),
-        envelope(&storage[1], .resource_packs_info, .{ .resource_packs_info = .{
-            .resource_pack_required = false,
-            .has_addon_packs = false,
-            .has_scripts = false,
-            .force_disable_vibrant_visuals = false,
-            .world_template_id_and_version = .{ .pack_uuid = @splat(0), .pack_version = "" },
-            .resource_packs = .empty,
-        } }),
-        raw(&storage[2], Profile.packetId(.start_game).?, "start"),
+        packets.networkSettings(&storage[0], .zlib, 256),
+        packets.resourcePacksInfo(&storage[1]),
+        packets.raw(&storage[2], packets.id(.start_game), "start"),
     };
 }
 
-/// A gameplay packet carrying its send time, padded to `size` bytes.
 pub fn stamped(storage: []u8, io: std.Io, size: usize) []const u8 {
     const len = bedwire.framing.varint.writeU32(storage, gameplay_id) catch unreachable;
     std.mem.writeInt(u64, storage[len..][0..8], nowNs(io), .little);
@@ -137,29 +114,6 @@ pub fn stamped(storage: []u8, io: std.Io, size: usize) []const u8 {
 
 pub fn nowNs(io: std.Io) u64 {
     return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
-}
-
-pub fn raw(storage: []u8, id: u16, body: []const u8) []const u8 {
-    const len = bedwire.framing.varint.writeU32(storage, id) catch unreachable;
-    @memcpy(storage[len..][0..body.len], body);
-    return storage[0 .. len + body.len];
-}
-
-fn typed(storage: []u8, packet: protocol.typed.Packet) []const u8 {
-    var writer = protocol.Writer.init(storage);
-    protocol.typed.encode(&writer, .{ .header = .{ .packet_id = Profile.packetId(protocol.typed.packetKind(packet)).? }, .packet = packet }) catch unreachable;
-    return writer.written();
-}
-
-fn envelope(storage: []u8, kind: bedwire.PacketKind, value: protocol.typed.Packet) []const u8 {
-    var writer = protocol.Writer.init(storage);
-    Profile.encode(&writer, .{
-        .header = .{ .packet_id = Profile.packetId(kind).? },
-        .kind = kind,
-        .payload = &.{},
-        .value = .{ .typed = value },
-    }) catch unreachable;
-    return writer.written();
 }
 
 pub fn percentile(sorted: []const u64, p: f64) u64 {

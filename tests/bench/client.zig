@@ -1,7 +1,4 @@
-//! Client process for bench/boundary.php.
-//! Usage: bedwire-bench-client <port> inbound <packets> <size> <per_frame>
-//!        bedwire-bench-client <port> outbound <packets>
-//! Prints the key DER and the server login packets as hex, logs in, runs, then reports one line.
+//! Usage: bedwire-bench-client <port> inbound <packets> <size> <per_frame> | outbound <packets>
 
 const std = @import("std");
 const peer_mod = @import("peer.zig");
@@ -45,7 +42,6 @@ pub fn main(init: std.process.Init) !void {
             sent += n;
             peer.pump(0);
         }
-        // Keep acknowledging until the server has drained everything.
         const end = peer_mod.nowNs(io) + 5 * std.time.ns_per_s;
         while (peer_mod.nowNs(io) < end) peer.pump(5);
         try out.print("sent {d}\n", .{sent});

@@ -86,28 +86,36 @@ pub fn build(b: *std.Build) void {
     b.step("phpt", "Run PHPT tests against the built extension").dependOn(&phpt.step);
 
     const bench_imports = nativeImports(b, target, .ReleaseFast);
-    const bench = b.addExecutable(.{ .name = "bedwire-bench", .root_module = b.createModule(.{
-        .root_source_file = b.path("bench/main.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .imports = &(bench_imports ++ [_]std.Build.Module.Import{.{ .name = "native", .module = b.createModule(.{
-            .root_source_file = b.path("src/native.zig"),
-            .target = target,
-            .optimize = .ReleaseFast,
-            .imports = &bench_imports,
-        }) }}),
-    }) });
-    const run_bench = b.addRunArtifact(bench);
-    b.step("bench", "Run native transport and queue benchmarks").dependOn(&run_bench.step);
-
-    const php_bench = b.addSystemCommand(&.{ php, "-n", "-d" });
-    php_bench.addPrefixedFileArg("extension=", binary);
-    php_bench.addArg("bench/boundary.php");
-    php_bench.addArtifactArg(b.addExecutable(.{ .name = "bedwire-bench-client", .root_module = b.createModule(.{
-        .root_source_file = b.path("bench/client.zig"),
+    const bench_packets = b.createModule(.{
+        .root_source_file = b.path("tests/packets.zig"),
+        .imports = bench_imports[0..1],
+    });
+    const bench_native = b.createModule(.{
+        .root_source_file = b.path("src/native.zig"),
         .target = target,
         .optimize = .ReleaseFast,
         .imports = &bench_imports,
+    });
+    const bench_all = bench_imports ++ [_]std.Build.Module.Import{
+        .{ .name = "native", .module = bench_native },
+        .{ .name = "packets", .module = bench_packets },
+    };
+    const bench = b.addExecutable(.{ .name = "bedwire-bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("tests/bench/main.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &bench_all,
+    }) });
+    b.step("bench", "Run native transport and queue benchmarks").dependOn(&b.addRunArtifact(bench).step);
+
+    const php_bench = b.addSystemCommand(&.{ php, "-n", "-d" });
+    php_bench.addPrefixedFileArg("extension=", binary);
+    php_bench.addArg("tests/bench/boundary.php");
+    php_bench.addArtifactArg(b.addExecutable(.{ .name = "bedwire-bench-client", .root_module = b.createModule(.{
+        .root_source_file = b.path("tests/bench/client.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &bench_all,
     }) }));
     php_bench.setCwd(b.path("."));
     php_bench.has_side_effects = true;

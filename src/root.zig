@@ -1,5 +1,3 @@
-//! PHP bindings. Runs only on the PHP thread that created each Server.
-
 const std = @import("std");
 const phpz = @import("phpz");
 const native = @import("native");
@@ -9,7 +7,7 @@ const String = phpz.zend.String;
 const Zval = phpz.Zval;
 const errors = phpz.errors;
 
-// The network thread outlives requests and must never touch Zend memory.
+// The network thread outlives requests so it cannot use the Zend allocator.
 const gpa = std.heap.c_allocator;
 
 comptime {
@@ -201,8 +199,8 @@ const Nbt = struct {
     }
 
     pub fn transcode(data: []const u8, from: i64, to: i64, max_depth: ?i64) !*String {
-        const source = format(from) orelse return errors.argumentValueError(2, "must be a Bedwire\\Nbt format", .{});
-        const target = format(to) orelse return errors.argumentValueError(3, "must be a Bedwire\\Nbt format", .{});
+        const source = std.enums.fromInt(native.nbt.Format, from) orelse return errors.argumentValueError(2, "must be a Bedwire\\Nbt format", .{});
+        const target = std.enums.fromInt(native.nbt.Format, to) orelse return errors.argumentValueError(3, "must be a Bedwire\\Nbt format", .{});
         const depth = std.math.cast(usize, max_depth orelse 512) orelse return errors.argumentValueError(4, "must be between 1 and 512", .{});
         if (depth == 0 or depth > 512) return errors.argumentValueError(4, "must be between 1 and 512", .{});
         const out = native.nbt.transcode(phpz.heap.php_allocator, data, source, target, .{ .max_depth = depth }) catch |err| {
@@ -210,15 +208,6 @@ const Nbt = struct {
         };
         defer phpz.heap.php_allocator.free(out);
         return String.init(out, false);
-    }
-
-    fn format(value: i64) ?native.nbt.Format {
-        return switch (value) {
-            0 => .java,
-            1 => .bedrock,
-            2 => .network,
-            else => null,
-        };
     }
 };
 
@@ -233,7 +222,6 @@ fn accepted(result: native.SendError!void, arg: u32) !bool {
     return true;
 }
 
-/// Borrows string bytes from the array; the caller copies them before returning to PHP.
 fn collect(packets: *Array, slices: *[native.max_packets_per_batch][]const u8, arg: u32) ![]const []const u8 {
     var count: usize = 0;
     var values = packets.valueIterator();
@@ -286,32 +274,17 @@ fn parseOptions(table: *Array, config: *native.Config, prefixes: *[native.Config
                 continue;
             }
             const small = std.math.cast(u32, number) orelse return errors.argumentValueError(4, "option \"%.*s\" is out of range", named(key));
-            if (std.mem.eql(u8, key, "max_sessions")) {
-                config.max_sessions = small;
-            } else if (std.mem.eql(u8, key, "packet_rate")) {
-                config.packet_rate = small;
-            } else if (std.mem.eql(u8, key, "ping_interval_ms")) {
-                config.ping_interval_ms = small;
-            } else if (std.mem.eql(u8, key, "max_receipts")) {
-                config.max_receipts = small;
-            } else if (std.mem.eql(u8, key, "max_blocked")) {
-                config.max_blocked = small;
-            } else if (std.mem.eql(u8, key, "handshake_rate")) {
-                config.handshake_rate = small;
-            } else if (std.mem.eql(u8, key, "raw_rate")) {
-                config.raw_rate = small;
-            } else if (std.mem.eql(u8, key, "command_queue_bytes")) {
-                config.command_queue_bytes = small;
-            } else if (std.mem.eql(u8, key, "event_queue_bytes")) {
-                config.event_queue_bytes = small;
-            } else if (std.mem.eql(u8, key, "max_batch_bytes")) {
-                config.max_batch_bytes = small;
-            } else {
-                return errors.argumentValueError(4, "has unknown option \"%.*s\"", named(key));
-            }
+            inline for (int_options) |name| {
+                if (std.mem.eql(u8, key, name)) {
+                    @field(config, name) = small;
+                    break;
+                }
+            } else return errors.argumentValueError(4, "has unknown option \"%.*s\"", named(key));
         }
     }
 }
+
+const int_options = .{ "max_sessions", "packet_rate", "ping_interval_ms", "max_receipts", "max_blocked", "handshake_rate", "raw_rate", "command_queue_bytes", "event_queue_bytes", "max_batch_bytes" };
 
 fn named(key: []const u8) struct { c_int, [*]const u8 } {
     return .{ @intCast(@min(key.len, 64)), key.ptr };
@@ -337,19 +310,15 @@ fn appendArray(array: *Array, value: *Array) void {
     _ = array.append(&zval);
 }
 
-fn sessionInt(session: u64) i64 {
-    return @bitCast(session);
-}
-
 fn appendEvent(result: *Array, event: native.Delivered) void {
     appendInt(result, @backingInt(std.meta.activeTag(event)));
     switch (event) {
         .packet => |packet| {
-            appendInt(result, sessionInt(packet.session));
+            appendInt(result, @bitCast(packet.session));
             appendString(result, packet.bytes);
         },
         .connect => |connect| {
-            appendInt(result, sessionInt(connect.session));
+            appendInt(result, @bitCast(connect.session));
             const details = Array.init(3);
             appendString(details, connect.address);
             appendInt(details, connect.port);
@@ -357,20 +326,12 @@ fn appendEvent(result: *Array, event: native.Delivered) void {
             appendArray(result, details);
         },
         .disconnect => |disconnect| {
-            appendInt(result, sessionInt(disconnect.session));
+            appendInt(result, @bitCast(disconnect.session));
             appendInt(result, @backingInt(disconnect.reason));
         },
-        .receipt_ack => |receipt| {
-            appendInt(result, sessionInt(receipt.session));
-            appendInt(result, @intCast(receipt.receipt));
-        },
-        .receipt_failed => |receipt| {
-            appendInt(result, sessionInt(receipt.session));
-            appendInt(result, @intCast(receipt.receipt));
-        },
-        .ping => |ping| {
-            appendInt(result, sessionInt(ping.session));
-            appendInt(result, @intCast(@min(ping.rtt_ms, std.math.maxInt(i64))));
+        .receipt_ack, .receipt_failed, .ping => |value| {
+            appendInt(result, @bitCast(value.session));
+            appendInt(result, @intCast(@min(value.value, std.math.maxInt(i64))));
         },
         .raw => |raw| {
             appendInt(result, 0);

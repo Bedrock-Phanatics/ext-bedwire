@@ -23,7 +23,6 @@ try {
     echo $e->getMessage(), "\n";
 }
 
-// The port is free again once the worker is joined.
 $again = new Bedwire\Server("127.0.0.1", $port, AD);
 var_dump($again->getPort() === $port);
 unset($again);

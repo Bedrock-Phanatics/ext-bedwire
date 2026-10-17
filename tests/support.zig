@@ -2,10 +2,9 @@ const std = @import("std");
 const bedwire = @import("bedwire");
 const raknet = @import("raknet");
 const native = @import("native");
+const packets = @import("packets.zig");
 
 const testing = std.testing;
-const protocol = bedwire.protocol;
-const Profile = protocol.Current;
 pub const Ecdsa = bedwire.crypto.spki.Ecdsa;
 
 pub const loopback = std.Io.net.IpAddress{ .ip4 = .loopback(0) };
@@ -26,62 +25,6 @@ pub fn config(overrides: anytype) native.Config {
     return result;
 }
 
-pub fn packetId(kind: bedwire.PacketKind) u16 {
-    return Profile.packetId(kind).?;
-}
-
-/// Packet bytes with a header and an opaque body; Bedwire does not decode these kinds.
-pub fn raw(storage: []u8, id: u16, body: []const u8) []const u8 {
-    const len = bedwire.framing.varint.writeU32(storage, id) catch unreachable;
-    @memmove(storage[len..][0..body.len], body);
-    return storage[0 .. len + body.len];
-}
-
-pub fn typed(storage: []u8, packet: protocol.typed.Packet) []const u8 {
-    var writer = protocol.Writer.init(storage);
-    protocol.typed.encode(&writer, .{ .header = .{ .packet_id = Profile.packetId(protocol.typed.packetKind(packet)).? }, .packet = packet }) catch unreachable;
-    return writer.written();
-}
-
-pub fn envelope(storage: []u8, kind: bedwire.PacketKind, value: anytype) []const u8 {
-    var writer = protocol.Writer.init(storage);
-    Profile.encode(&writer, .{
-        .header = .{ .packet_id = Profile.packetId(kind).? },
-        .kind = kind,
-        .payload = &.{},
-        .value = .{ .typed = value },
-    }) catch unreachable;
-    return writer.written();
-}
-
-pub fn networkSettings(storage: []u8, algorithm: @FieldType(@FieldType(protocol.typed.Packet, "network_settings"), "compression_algorithm")) []const u8 {
-    return envelope(storage, .network_settings, protocol.typed.Packet{ .network_settings = .{
-        .compression_threshold = 1,
-        .compression_algorithm = algorithm,
-        .client_throttle_enabled = false,
-        .client_throttle_threshold = 0,
-        .client_throttle_scalar = 0,
-    } });
-}
-
-pub fn resourcePacksInfo(storage: []u8) []const u8 {
-    return envelope(storage, .resource_packs_info, protocol.typed.Packet{ .resource_packs_info = .{
-        .resource_pack_required = false,
-        .has_addon_packs = false,
-        .has_scripts = false,
-        .force_disable_vibrant_visuals = false,
-        .world_template_id_and_version = .{ .pack_uuid = @splat(0), .pack_version = "" },
-        .resource_packs = .empty,
-    } });
-}
-
-pub fn stackFinished(storage: []u8) []const u8 {
-    return envelope(storage, .resource_pack_client_response, protocol.typed.Packet{ .resource_pack_client_response = .{
-        .response = .{ .resource_pack_stack_finished = "resourcepackstackfinished" },
-    } });
-}
-
-/// Wall-clock bound for loops waiting on the network.
 pub const Deadline = struct {
     io: std.Io,
     end: i96,
@@ -113,7 +56,6 @@ pub const Owned = union(native.Event) {
     }
 };
 
-/// Waits for the next event that is not a ping.
 pub fn nextEvent(host: *native.Host, timeout_ms: u32, pump: anytype) !Owned {
     const deadline = Deadline.in(host.io(), timeout_ms);
     while (!deadline.expired()) {
@@ -122,8 +64,8 @@ pub fn nextEvent(host: *native.Host, timeout_ms: u32, pump: anytype) !Owned {
                 .connect => |c| .{ .connect = c.session },
                 .disconnect => |d| .{ .disconnect = .{ .session = d.session, .reason = d.reason } },
                 .packet => |p| .{ .packet = .{ .session = p.session, .bytes = try testing.allocator.dupe(u8, p.bytes) } },
-                .receipt_ack => |r| .{ .receipt_ack = r.receipt },
-                .receipt_failed => |r| .{ .receipt_failed = r.receipt },
+                .receipt_ack => |r| .{ .receipt_ack = r.value },
+                .receipt_failed => |r| .{ .receipt_failed = r.value },
                 .ping => continue,
                 .raw => |r| .{ .raw = .{ .port = r.port, .bytes = try testing.allocator.dupe(u8, r.bytes) } },
             };
@@ -136,7 +78,6 @@ pub fn nextEvent(host: *native.Host, timeout_ms: u32, pump: anytype) !Owned {
     return error.Timeout;
 }
 
-/// A Bedrock client: raknet-zig transport and a client Bedwire session.
 pub const Client = struct {
     io: std.Io,
     rak: *raknet.Client,
@@ -174,8 +115,8 @@ pub const Client = struct {
         testing.allocator.destroy(self);
     }
 
-    pub fn send(self: *Client, packets: []const []const u8) !void {
-        const frame = try self.session.encode(packets);
+    pub fn send(self: *Client, batch: []const []const u8) !void {
+        const frame = try self.session.encode(batch);
         defer frame.release();
         try self.rak.send(frame.bytes, .reliable_ordered, 0);
     }
@@ -184,14 +125,12 @@ pub const Client = struct {
         try self.rak.send(payload, .reliable_ordered, 0);
     }
 
-    /// Transport errors end the pump; the server side reports what happened.
     pub fn pump(self: *Client, ms: u32) void {
         const timeout: std.Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(ms), .clock = .awake } };
         if (self.rak.isClosed()) return self.io.sleep(.fromMilliseconds(ms), .awake) catch {};
         _ = self.rak.poll(timeout, self, onMessage) catch {};
     }
 
-    /// Polls until `count` packets arrived in total, then returns them.
     pub fn expectPackets(self: *Client, count: usize, timeout_ms: u32) ![][]u8 {
         const deadline = Deadline.in(self.io, timeout_ms);
         while (self.received.items.len < count) {
@@ -208,9 +147,9 @@ pub const Client = struct {
 
     fn onMessage(context: *anyopaque, payload: raknet.BorrowedPayload) error{ApplicationFailure}!void {
         const self: *Client = @ptrCast(@alignCast(context));
-        var packets = self.session.ingest(payload.bytes) catch return error.ApplicationFailure;
-        defer packets.deinit();
-        while (packets.next()) |packet| {
+        var batch = self.session.ingest(payload.bytes) catch return error.ApplicationFailure;
+        defer batch.deinit();
+        while (batch.next()) |packet| {
             if (packet.kind == .server_to_client_handshake) {
                 self.session.acceptServerHandshakePacket(testing.allocator, packet, self.key.secret_key) catch {
                     self.handshake_failed = true;
@@ -235,56 +174,54 @@ pub fn expectPacket(host: *native.Host, client: *Client, session: u64, expected:
     try testing.expectEqualSlices(u8, expected, event.packet.bytes);
 }
 
-/// Runs the login sequence Quark drives and leaves both sides in game.
-pub fn login(host: *native.Host, client: *Client, session: u64, compression: anytype) !void {
+pub fn login(host: *native.Host, client: *Client, session: u64, compression: packets.Compression) !void {
     var a: [4096]u8 = undefined;
     var b: [4096]u8 = undefined;
 
-    const request = typed(&a, .{ .request_network_settings = .{ .client_network_version = bedwire.protocol.Current.protocol_number } });
+    const request = packets.request(&a);
     try client.send(&.{request});
     try expectPacket(host, client, session, request);
 
-    _ = try host.send(session, &.{networkSettings(&b, compression)}, false);
+    _ = try host.send(session, &.{packets.networkSettings(&b, compression, 1)}, false);
     _ = try client.expectPackets(1, 5000);
     try testing.expectEqual(bedwire.State.authenticating, client.session.state);
 
-    const login_packet = typed(&a, .{ .login = .{ .client_network_version = bedwire.protocol.Current.protocol_number, .connection_request = "fixture" } });
+    const login_packet = packets.login(&a);
     try client.send(&.{login_packet});
     try expectPacket(host, client, session, login_packet);
 
-    // Quark derives the key off the network thread, then hands it over with the handshake.
     const server_key = Ecdsa.KeyPair.generate(host.io());
     var salt: [16]u8 = undefined;
     host.io().random(&salt);
     const token = try bedwire.auth.login.serverHandshake(testing.allocator, server_key, salt, .{});
     defer testing.allocator.free(token);
     const key = try bedwire.crypto.ecdh.derive(server_key.secret_key, client.key.public_key, salt);
-    try host.enableEncryption(session, typed(&b, .{ .server_to_client_handshake = .{ .handshake_web_token = token } }), &key);
+    try host.enableEncryption(session, packets.typed(&b, .{ .server_to_client_handshake = .{ .handshake_web_token = token } }), &key);
     _ = try client.expectPackets(2, 5000);
     try testing.expect(!client.handshake_failed);
     try testing.expect(client.session.encrypted());
 
-    const c2s = typed(&a, .{ .client_to_server_handshake = .{} });
+    const c2s = packets.typed(&a, .{ .client_to_server_handshake = .{} });
     try client.send(&.{c2s});
     try expectPacket(host, client, session, c2s);
     try client.session.advance(.resource_packs);
 
     var status: [16]u8 = undefined;
-    _ = try host.send(session, &.{ raw(&status, packetId(.play_status), "\x00\x00\x00\x00"), resourcePacksInfo(&b) }, false);
+    _ = try host.send(session, &.{ packets.raw(&status, packets.id(.play_status), "\x00\x00\x00\x00"), packets.resourcePacksInfo(&b) }, false);
     _ = try client.expectPackets(4, 5000);
 
-    const finished = stackFinished(&a);
+    const finished = packets.stackFinished(&a);
     try client.send(&.{finished});
     try expectPacket(host, client, session, finished);
     try client.session.advance(.waiting_for_start_game);
 
     var start: [16]u8 = undefined;
     var after: [16]u8 = undefined;
-    _ = try host.send(session, &.{ raw(&start, packetId(.start_game), "start"), raw(&after, 1020, "after-start") }, false);
+    _ = try host.send(session, &.{ packets.raw(&start, packets.id(.start_game), "start"), packets.raw(&after, 1020, "after-start") }, false);
     _ = try client.expectPackets(6, 5000);
     try client.session.advance(.spawn_ready);
 
-    const initialised = raw(&a, packetId(.set_local_player_as_initialised), "\x01");
+    const initialised = packets.raw(&a, packets.id(.set_local_player_as_initialised), "\x01");
     try client.send(&.{initialised});
     try expectPacket(host, client, session, initialised);
     try client.session.advance(.in_game);
