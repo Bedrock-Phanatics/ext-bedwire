@@ -2,7 +2,6 @@
 
 declare(strict_types=1);
 
-// PHP/native boundary costs with a real client in another process.
 // Usage: php -d extension=bedwire.so bench/boundary.php <bedwire-bench-client>
 
 use Bedwire\Server;
@@ -22,7 +21,6 @@ function startClient(string $binary, int $port, array $args): array {
     return [$process, $pipes[1], $der, $replies];
 }
 
-/** Answers the client's login like Quark would and returns its session ID. */
 function login(Server $server, string $der, array $replies): int {
     $steps = 0;
     $session = 0;
@@ -60,7 +58,6 @@ function percentile(array $sorted, float $p): int {
     return $sorted ? $sorted[(int) ((count($sorted) - 1) * $p)] : 0;
 }
 
-// Inbound: drain events in one call per poll versus representation overheads.
 foreach ([64, 1200] as $size) {
     $total = 200_000;
     $server = newServer();
@@ -74,7 +71,6 @@ foreach ([64, 1200] as $size) {
     $latencies = [];
     $start = hrtime(true);
     while ($received < $total && hrtime(true) - $start < 30e9) {
-        // Only non-blocking calls that returned events are timed.
         $before = hrtime(true);
         $events = $server->poll(4096, 0);
         if ($events) {
@@ -85,7 +81,6 @@ foreach ([64, 1200] as $size) {
         }
         $n = count($events);
 
-        // What a nested [kind, session, data] representation would add on top.
         $before = hrtime(true);
         $nested = [];
         for ($i = 0; $i < $n; $i += 3) {
@@ -116,7 +111,6 @@ foreach ([64, 1200] as $size) {
     proc_close($process);
 }
 
-// Outbound: send() per packet versus sendBatch() of 16.
 foreach ([[1, 64], [16, 64], [1, 1200], [16, 1200]] as [$perCall, $size]) {
     $total = 64_000;
     $server = newServer();
@@ -128,7 +122,6 @@ foreach ([[1, 64], [16, 64], [1, 1200], [16, 1200]] as [$perCall, $size]) {
     $calls = 0;
     $sent = 0;
     while ($sent < $total) {
-        // Bursts of about 64 KiB, within RakNet's per-session queue, as a game tick would send.
         for ($bytes = 0; $bytes < 65536 && $sent < $total; $bytes += $perCall * $size) {
             $batch = [];
             for ($i = 0; $i < $perCall; $i++) {

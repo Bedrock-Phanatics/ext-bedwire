@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: da7337ee3866c9ec97908c901102d525cfcb5088 */
+ * Stub hash: 34ce8c41b324628c1366d8346c824f6d35cae498 */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Bedwire_Server___construct, 0, 0, 3)
 	ZEND_ARG_TYPE_INFO(0, address, IS_STRING, 0)

@@ -11,15 +11,10 @@ namespace Bedwire {
     {
     }
 
-    /** Thrown when a bounded queue is full; nothing was queued. */
     final class BackpressureException extends Exception
     {
     }
 
-    /**
-     * A RakNet listener with Bedrock sessions, run on a native network thread.
-     * Single-use: once stopped, create a new Server to listen again.
-     */
     final class Server
     {
         public const int EVENT_CONNECT = 1;
@@ -44,10 +39,7 @@ namespace Bedwire {
 
         public function getPort(): int {}
 
-        /**
-         * Returns a flat list of [kind, session, data] triples.
-         * Waits up to $timeoutMs only when no event is queued.
-         */
+        /** Returns a flat list of kind, session, data triples. */
         public function poll(int $maxEvents = 4096, int $timeoutMs = 0): array {}
 
         public function send(int $session, string $packet): bool {}

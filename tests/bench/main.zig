@@ -1,5 +1,4 @@
-//! Native benchmarks: the SPSC ring and end-to-end traffic through the worker.
-//! Clients run in this process on their own thread, so CPU figures include them.
+//! Clients run in this process so process CPU includes them.
 
 const std = @import("std");
 const native = @import("native");
@@ -114,7 +113,6 @@ const Clients = struct {
     }
 };
 
-/// Answers each session's login steps the way Quark would.
 fn respond(host: *native.Host, steps: *std.AutoHashMapUnmanaged(u64, u8), session: u64) !void {
     var storage: [3][256]u8 = undefined;
     const packets = peer_mod.serverPackets(&storage);
@@ -147,7 +145,6 @@ fn startHost(sessions: usize) !*native.Host {
     });
 }
 
-/// CPU time of the worker thread alone, from /proc on Linux.
 fn workerCpuMs(host: *native.Host) u64 {
     const tid = host.shared.worker_thread.load(.acquire);
     var path: [64]u8 = undefined;
@@ -160,7 +157,7 @@ fn workerCpuMs(host: *native.Host) u64 {
     var i: usize = 0;
     var total: u64 = 0;
     while (fields.next()) |field| : (i += 1) {
-        // utime and stime are fields 14 and 15; the first token here is field 3.
+        // utime and stime are fields 14 and 15, counting from field 3 here.
         if (i == 11 or i == 12) total += std.fmt.parseInt(u64, field, 10) catch 0;
         if (i == 12) break;
     }
@@ -174,12 +171,9 @@ fn cpuMs() u64 {
     return user + system;
 }
 
-/// Each session sends `size`-byte packets at 20 Hz; the server echoes nothing.
-/// Latency is client send to the PHP-side read of the event.
 fn paced(io: std.Io, sessions: usize, size: usize, seconds: u32) !void {
     const host = try startHost(sessions);
     defer host.destroy();
-    // About 100 sessions per client thread keeps the clients from being the bottleneck.
     const groups = @max(1, sessions / 100);
     const clients = try allocator.alloc(Clients, groups);
     defer allocator.free(clients);
@@ -235,7 +229,6 @@ fn paced(io: std.Io, sessions: usize, size: usize, seconds: u32) !void {
         @as(f64, @floatFromInt(cpu)) / @as(f64, @floatFromInt(seconds * 1000)) * 100,
     });
 
-    // Outbound: the PHP side sends to every session at 20 Hz, timed to the client read.
     var storage: [2048]u8 = undefined;
     const ids = try sessionIds(allocator, &steps);
     defer allocator.free(ids);
@@ -265,7 +258,6 @@ fn paced(io: std.Io, sessions: usize, size: usize, seconds: u32) !void {
     });
 }
 
-/// One session, client sends as fast as its queue allows; then PHP-side sends.
 fn saturated(io: std.Io, size: usize) !void {
     const host = try startHost(1);
     defer host.destroy();
@@ -299,7 +291,6 @@ fn saturated(io: std.Io, size: usize) !void {
 
     clients.quiet.store(true, .release);
 
-    // Outbound send-call cost: single packets versus 16 per call while the client reads.
     const ids = try sessionIds(allocator, &steps);
     defer allocator.free(ids);
     var storage: [2048]u8 = undefined;
@@ -308,7 +299,6 @@ fn saturated(io: std.Io, size: usize) !void {
         var batch: [16][]const u8 = @splat(packet);
         var calls: usize = 0;
         var spent: u64 = 0;
-        // Bursts small enough for RakNet's per-session queue, then time to drain.
         for (0..50) |_| {
             for (0..128) |_| {
                 const before = peer_mod.nowNs(io);

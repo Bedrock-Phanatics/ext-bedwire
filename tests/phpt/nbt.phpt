@@ -6,7 +6,6 @@ bedwire
 <?php
 use Bedwire\Nbt;
 
-// {"a": int 5, "s": "hi"} in Bedrock little-endian.
 $disk = "\x0a\x00\x00" . "\x03\x01\x00a" . pack("V", 5) . "\x08\x01\x00s\x02\x00hi" . "\x00";
 $network = Nbt::transcode($disk, Nbt::BEDROCK, Nbt::NETWORK);
 echo bin2hex($network), "\n";

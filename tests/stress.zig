@@ -3,14 +3,14 @@ const bedwire = @import("bedwire");
 const raknet = @import("raknet");
 const native = @import("native");
 const support = @import("support.zig");
+const packets = @import("packets.zig");
 const options = @import("build_options");
 
 const testing = std.testing;
 
-/// The uncompressed first batch every client sends.
 fn requestFrame(storage: []u8) []const u8 {
     var packet: [16]u8 = undefined;
-    const request = support.typed(&packet, .{ .request_network_settings = .{ .client_network_version = bedwire.protocol.Current.protocol_number } });
+    const request = packets.request(&packet);
     storage[0] = 0xfe;
     const len = bedwire.framing.varint.writeU32(storage[1..], @intCast(request.len)) catch unreachable;
     @memcpy(storage[1 + len ..][0..request.len], request);
@@ -66,7 +66,6 @@ fn churn(host: *native.Host, count: usize) !void {
     try testing.expectEqual(count, counts.connects);
     try testing.expectEqual(count, host.statistics().sessions);
 
-    // Half are closed by the server, half by their clients.
     for (sessions.items, 0..) |session, i| {
         if (i % 2 == 0) try host.disconnect(session) else clients.items[i].closeNow();
     }
@@ -122,7 +121,7 @@ test "stopping during a flood neither deadlocks nor leaks" {
     const Flood = struct {
         fn run(c: *support.Client, stop: *std.atomic.Value(bool)) void {
             var storage: [512]u8 = undefined;
-            const packet = support.raw(&storage, 1020, storage[2..]);
+            const packet = packets.raw(&storage, 1020, storage[2..]);
             while (!stop.load(.acquire)) {
                 c.send(&.{ packet, packet, packet, packet }) catch {};
                 c.pump(0);

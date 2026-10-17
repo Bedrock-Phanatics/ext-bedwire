@@ -10,8 +10,6 @@ pub const Limits = struct {
 
 pub const Error = error{ InvalidFormat, InvalidOptions } || nbt.Error;
 
-/// Validates one root tag and re-encodes it, without building PHP values.
-/// Trailing bytes are rejected. The caller owns the result.
 pub fn transcode(allocator: std.mem.Allocator, data: []const u8, from: Format, to: Format, limits: Limits) Error![]u8 {
     if (limits.max_depth == 0 or limits.max_depth > 512) return error.InvalidOptions;
     var input = options(from, limits);
@@ -89,7 +87,6 @@ test "malformed, truncated, trailing and oversized input is refused" {
 test "deep nesting stops at the depth limit" {
     var data: [4096]u8 = undefined;
     var len: usize = 0;
-    // Nested compounds: tag 10, empty name.
     for (0..1000) |_| {
         data[len..][0..3].* = .{ 10, 0, 0 };
         len += 3;

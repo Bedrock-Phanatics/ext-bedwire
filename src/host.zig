@@ -1,5 +1,4 @@
 const std = @import("std");
-const raknet = @import("raknet");
 
 const Ring = @import("ring.zig").Ring;
 const Worker = @import("worker.zig").Worker;
@@ -10,7 +9,6 @@ pub const Command = enum(u32) { send = 1, disconnect, encrypt, accept_login, adv
 pub const Reason = enum(u8) { remote, server, protocol, overload, shutdown };
 
 pub const max_sessions_limit = 1 << 16;
-/// Largest RakNet message, so the largest Bedrock frame.
 pub const max_frame_bytes = 4 * 1024 * 1024;
 pub const max_packets_per_batch = 1024;
 pub const key_len = 32;
@@ -24,14 +22,13 @@ pub const Config = struct {
     command_queue_bytes: usize = 16 * 1024 * 1024,
     event_queue_bytes: usize = 16 * 1024 * 1024,
     max_batch_bytes: usize = 4 * 1024 * 1024,
-    /// Inbound game packets per session per second; 0 disables the limit.
     packet_rate: u32 = 2000,
     ping_interval_ms: u32 = 2000,
     max_receipts: u32 = 4096,
     max_blocked: u32 = 4096,
     raw_prefixes: []const []const u8 = &.{},
     raw_rate: u32 = 1000,
-    /// Offline handshake datagrams per source IP per second; raise it behind a proxy.
+    /// Per source IP, raise it when players come through a proxy.
     handshake_rate: u32 = 20,
 
     pub const max_raw_prefixes = 8;
@@ -54,7 +51,6 @@ pub const Config = struct {
     }
 };
 
-/// Worker counters mirrored for the PHP thread; values may lag by one turn.
 pub const Statistics = struct {
     sessions: u64 = 0,
     bytes_sent: u64 = 0,
@@ -77,7 +73,6 @@ pub const stat_names = std.meta.fieldNames(Statistics);
 pub const Shared = struct {
     commands: Ring,
     events: Ring,
-    /// Generation per slot while the session is live, else 0.
     live: []std.atomic.Value(u32),
     stats: [stat_names.len]std.atomic.Value(u64),
 
@@ -88,7 +83,6 @@ pub const Shared = struct {
     stop_requested: std.atomic.Value(bool) = .init(false),
     stop_timeout_ms: std.atomic.Value(u32) = .init(0),
     exited: std.atomic.Value(bool) = .init(false),
-    /// For profilers; zero until the worker starts.
     worker_thread: std.atomic.Value(u64) = .init(0),
     wake_token: [16]u8,
 
@@ -123,16 +117,17 @@ pub const Delivered = union(Event) {
     connect: struct { session: u64, address: []const u8, port: u16, guid: u64 },
     disconnect: struct { session: u64, reason: Reason },
     packet: struct { session: u64, bytes: []const u8 },
-    receipt_ack: struct { session: u64, receipt: u64 },
-    receipt_failed: struct { session: u64, receipt: u64 },
-    ping: struct { session: u64, rtt_ms: u64 },
+    receipt_ack: Value,
+    receipt_failed: Value,
+    ping: Value,
     raw: struct { address: []const u8, port: u16, bytes: []const u8 },
+
+    /// The receipt ID, or the RTT in milliseconds for pings.
+    pub const Value = struct { session: u64, value: u64 };
 };
 
 pub const SendError = error{ Closed, Backpressure, TooLarge, TooManyPackets, EmptyBatch };
 
-/// Owned by one PHP thread. The worker never touches Zend memory; everything
-/// handed to it is copied into the command ring before a call returns.
 pub const Host = struct {
     allocator: std.mem.Allocator,
     threaded: std.Io.Threaded,
@@ -207,8 +202,6 @@ pub const Host = struct {
         return !self.stopped and !self.shared.exited.load(.acquire);
     }
 
-    /// Idempotent. Lets sessions close gracefully for up to timeout_ms, then
-    /// forces the rest closed and joins the worker. Remaining events stay drainable.
     pub fn stop(self: *Host, timeout_ms: u32) void {
         if (self.stopped) return;
         self.stopped = true;
@@ -244,7 +237,6 @@ pub const Host = struct {
         return @min(self.config.max_batch_bytes, max_frame_bytes - 64, self.shared.commands.maxRecord() - 64);
     }
 
-    /// Returns the receipt ID when requested. Packets keep their order and share one frame.
     pub fn send(self: *Host, session: u64, packets: []const []const u8, receipt: bool) SendError!u64 {
         if (packets.len == 0) return error.EmptyBatch;
         if (packets.len > max_packets_per_batch) return error.TooManyPackets;
@@ -279,14 +271,12 @@ pub const Host = struct {
         return self.sessionCommand(.disconnect, session, &.{}, &.{});
     }
 
-    /// Sends the cleartext ServerToClientHandshake, then encrypts everything after it.
     pub fn enableEncryption(self: *Host, session: u64, handshake: []const u8, key: *const [key_len]u8) SendError!void {
         if (handshake.len == 0) return error.EmptyBatch;
         if (handshake.len > self.maxBatchPayload()) return error.TooLarge;
         return self.sessionCommand(.encrypt, session, key, handshake);
     }
 
-    /// For servers without encryption: the client key PHP verified from the login chain, as DER.
     pub fn acceptLogin(self: *Host, session: u64, client_key_der: []const u8) SendError!void {
         if (client_key_der.len == 0 or client_key_der.len > 512) return error.TooLarge;
         return self.sessionCommand(.accept_login, session, client_key_der, &.{});
@@ -314,34 +304,37 @@ pub const Host = struct {
         return self.globalCommand(.raw_send, std.mem.asBytes(&address), payload);
     }
 
-    /// Decoded view into the event ring. Valid until releaseEvents.
     pub fn nextEvent(self: *Host) ?Delivered {
         const record = self.shared.events.next() orelse return null;
         const bytes = record.bytes;
         const session = std.mem.readInt(u64, bytes[0..8], .little);
-        const event: Delivered = switch (@as(Event, @fromBackingInt(@intCast(record.tag)))) {
-            .packet => .{ .packet = .{ .session = session, .bytes = bytes[8..] } },
+        const kind: Event = @fromBackingInt(@intCast(record.tag));
+        if (kind == .packet) return .{ .packet = .{ .session = session, .bytes = bytes[8..] } };
+        if (kind == .disconnect) return .{ .disconnect = .{ .session = session, .reason = @fromBackingInt(@intCast(bytes[8])) } };
+        const value: Delivered.Value = .{ .session = session, .value = std.mem.readInt(u64, bytes[8..16], .little) };
+        return switch (kind) {
+            .packet, .disconnect => unreachable,
             .connect => .{ .connect = .{
                 .session = session,
-                .guid = std.mem.readInt(u64, bytes[8..16], .little),
+                .guid = value.value,
                 .port = std.mem.readInt(u16, bytes[16..18], .little),
                 .address = bytes[18..],
             } },
-            .disconnect => .{ .disconnect = .{ .session = session, .reason = @fromBackingInt(@intCast(bytes[8])) } },
-            .receipt_ack => .{ .receipt_ack = .{ .session = session, .receipt = std.mem.readInt(u64, bytes[8..16], .little) } },
-            .receipt_failed => .{ .receipt_failed = .{ .session = session, .receipt = std.mem.readInt(u64, bytes[8..16], .little) } },
-            .ping => .{ .ping = .{ .session = session, .rtt_ms = std.mem.readInt(u64, bytes[8..16], .little) } },
+            .receipt_ack => blk: {
+                self.receipts_pending -= 1;
+                break :blk .{ .receipt_ack = value };
+            },
+            .receipt_failed => blk: {
+                self.receipts_pending -= 1;
+                break :blk .{ .receipt_failed = value };
+            },
+            .ping => .{ .ping = value },
             .raw => .{ .raw = .{
-                .port = @intCast(session & 0xffff),
-                .address = bytes[16..][0..std.mem.readInt(u64, bytes[8..16], .little)],
-                .bytes = bytes[16 + std.mem.readInt(u64, bytes[8..16], .little) ..],
+                .port = @intCast(session),
+                .address = bytes[16..][0..value.value],
+                .bytes = bytes[16 + value.value ..],
             } },
         };
-        switch (event) {
-            .receipt_ack, .receipt_failed => self.receipts_pending -= 1,
-            else => {},
-        }
-        return event;
     }
 
     pub fn releaseEvents(self: *Host) void {
@@ -349,7 +342,6 @@ pub const Host = struct {
         if (self.shared.wants_events_space.swap(false, .seq_cst)) self.wakeWorker(true);
     }
 
-    /// Waits until an event is queued, the worker exits, or the timeout passes.
     pub fn waitEvents(self: *Host, timeout_ms: u32) void {
         if (timeout_ms == 0 or !self.shared.events.isEmpty()) return;
         const seq = self.shared.event_seq.load(.seq_cst);
