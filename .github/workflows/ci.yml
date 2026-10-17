@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  zig:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        optimize: [Debug, ReleaseSafe]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - run: zig fmt --check build.zig build.zig.zon src tests bench
+      - run: zig build test -Doptimize=${{ matrix.optimize }} --summary all
+
+  php:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.4"]
+        ts: [zts, nts]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: php-config
+        env:
+          phpts: ${{ matrix.ts }}
+      - name: ReleaseFast build
+        run: zig build -Doptimize=ReleaseFast -Dphp-include-dir="$(php-config --include-dir)"
+      - name: PHPT
+        run: zig build phpt -Doptimize=ReleaseSafe -Dphp-include-dir="$(php-config --include-dir)" -Dphp="$(command -v php)"
+
+  dependencies:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Pinned revisions only and a single protocol-zig
+        run: |
+          ! grep -E '\?ref=(main|master|dev)"' build.zig.zon
+          grep -E '#[0-9a-f]{40}"' build.zig.zon | wc -l | grep -qx 4
+          zig build -l > /dev/null
+          test "$(ls zig-pkg | grep -c '^bedrock_protocol-')" -eq 1
+
+  stress:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - run: zig build test -Doptimize=ReleaseSafe -Dstress-rounds=20
+      - run: zig build bench
