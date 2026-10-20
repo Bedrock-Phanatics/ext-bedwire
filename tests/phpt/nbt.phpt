@@ -1,5 +1,5 @@
 --TEST--
-NBT transcoding validates input and round trips between formats
+NBT transcoding and length scanning validate input and round trip between formats
 --EXTENSIONS--
 bedwire
 --FILE--
@@ -18,7 +18,7 @@ foreach (["", "\x0a", $disk . "\x00", "\x63\x00\x00"] as $bad) {
     try {
         Nbt::transcode($bad, Nbt::BEDROCK, Nbt::NETWORK);
         echo "accepted\n";
-    } catch (Bedwire\Exception $e) {
+    } catch (Bedwire\NbtException $e) {
         echo "rejected\n";
     }
 }
@@ -26,12 +26,21 @@ foreach (["", "\x0a", $disk . "\x00", "\x63\x00\x00"] as $bad) {
 $deep = str_repeat("\x0a\x00\x00", 100) . str_repeat("\x00", 100);
 try {
     Nbt::transcode($deep, Nbt::BEDROCK, Nbt::NETWORK, 16);
-} catch (Bedwire\Exception $e) {
+} catch (Bedwire\NbtException $e) {
     echo "too deep\n";
 }
 var_dump(strlen(Nbt::transcode($deep, Nbt::BEDROCK, Nbt::NETWORK, 128)) > 0);
+var_dump(strlen(Nbt::transcode($deep, Nbt::BEDROCK, Nbt::NETWORK)) > 0);
 
-foreach ([fn() => Nbt::transcode($disk, 9, 1), fn() => Nbt::transcode($disk, 1, 1, 0)] as $call) {
+var_dump(Nbt::length($disk . "trailing", Nbt::BEDROCK) === strlen($disk));
+var_dump(Nbt::length("xx" . $network, Nbt::NETWORK, 2) === strlen($network));
+try {
+    Nbt::length(substr($disk, 0, -1), Nbt::BEDROCK);
+} catch (Bedwire\NbtException $e) {
+    echo $e->getMessage(), "\n";
+}
+
+foreach ([fn() => Nbt::transcode($disk, 9, 1), fn() => Nbt::transcode($disk, 1, 1, -1), fn() => Nbt::length($disk, 1, 99)] as $call) {
     try {
         $call();
     } catch (ValueError $e) {
@@ -50,5 +59,10 @@ rejected
 rejected
 too deep
 bool(true)
+bool(true)
+bool(true)
+bool(true)
+invalid NBT: UnexpectedEndOfInput
 Bedwire\Nbt::transcode(): Argument #2 ($from) must be a Bedwire\Nbt format
-Bedwire\Nbt::transcode(): Argument #4 ($maxDepth) must be between 1 and 512
+Bedwire\Nbt::transcode(): Argument #4 ($maxDepth) must not be negative
+Bedwire\Nbt::length(): Argument #3 ($offset) is past the end of the data

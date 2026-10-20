@@ -22,12 +22,6 @@ pub fn typed(storage: []u8, packet: protocol.typed.Packet) []const u8 {
     return writer.written();
 }
 
-fn envelope(storage: []u8, kind: bedwire.PacketKind, value: protocol.typed.Packet) []const u8 {
-    var writer = protocol.Writer.init(storage);
-    Profile.encode(&writer, .{ .header = .{ .packet_id = id(kind) }, .kind = kind, .payload = &.{}, .value = .{ .typed = value } }) catch unreachable;
-    return writer.written();
-}
-
 pub fn request(storage: []u8) []const u8 {
     return typed(storage, .{ .request_network_settings = .{ .client_network_version = Profile.protocol_number } });
 }
@@ -37,7 +31,7 @@ pub fn login(storage: []u8) []const u8 {
 }
 
 pub fn networkSettings(storage: []u8, algorithm: Compression, threshold: u16) []const u8 {
-    return envelope(storage, .network_settings, .{ .network_settings = .{
+    return typed(storage, .{ .network_settings = .{
         .compression_threshold = threshold,
         .compression_algorithm = algorithm,
         .client_throttle_enabled = false,
@@ -46,8 +40,12 @@ pub fn networkSettings(storage: []u8, algorithm: Compression, threshold: u16) []
     } });
 }
 
+pub fn playStatus(storage: []u8) []const u8 {
+    return raw(storage, id(.play_status), "\x00\x00\x00\x00");
+}
+
 pub fn resourcePacksInfo(storage: []u8) []const u8 {
-    return envelope(storage, .resource_packs_info, .{ .resource_packs_info = .{
+    return typed(storage, .{ .resource_packs_info = .{
         .resource_pack_required = false,
         .has_addon_packs = false,
         .has_scripts = false,
@@ -58,7 +56,7 @@ pub fn resourcePacksInfo(storage: []u8) []const u8 {
 }
 
 pub fn stackFinished(storage: []u8) []const u8 {
-    return envelope(storage, .resource_pack_client_response, .{ .resource_pack_client_response = .{
+    return typed(storage, .{ .resource_pack_client_response = .{
         .response = .{ .resource_pack_stack_finished = "resourcepackstackfinished" },
     } });
 }

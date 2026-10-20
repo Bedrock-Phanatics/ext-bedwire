@@ -20,8 +20,11 @@ pub fn build(b: *std.Build) void {
     const libc_file = b.option([]const u8, "libc-file", "Libc paths file for C translation and extension compilation");
     const php = b.option([]const u8, "php", "PHP binary used for PHPT tests and benchmarks") orelse "php";
     const stress_rounds = b.option(usize, "stress-rounds", "Rounds for the start/stop and churn stress tests") orelse 3;
+    const native_prefix = b.option([]const u8, "native-prefix", "Install prefix of nethernet-zig's patched libdatachannel") orelse
+        b.graph.environ_map.get("NETHERNET_NATIVE_PREFIX") orelse ".deps/native";
 
-    const imports = nativeImports(b, target, optimize);
+    const libdeflate = b.option(bool, "libdeflate", "Compress session batches with libdeflate instead of std's deflate") orelse false;
+    const imports = nativeImports(b, target, optimize, native_prefix, libdeflate);
     const native = b.createModule(.{
         .root_source_file = b.path("src/native.zig"),
         .target = target,
@@ -48,7 +51,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/root.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "native", .module = native }},
+            .imports = &.{
+                .{ .name = "native", .module = native },
+                imports[2],
+            },
         }),
     });
     const extension_info = b.addOptions();
@@ -60,6 +66,7 @@ pub fn build(b: *std.Build) void {
     const install = b.addInstallFileWithDir(extension.getEmittedBin(), .{ .custom = "modules" }, filename);
     b.getInstallStep().dependOn(&install.step);
     const binary = extension.getEmittedBin();
+    const library_path = b.pathJoin(&.{ native_prefix, if (target.result.os.tag == .windows) "bin" else "lib" });
 
     const options = b.addOptions();
     options.addOption(usize, "stress_rounds", stress_rounds);
@@ -73,8 +80,11 @@ pub fn build(b: *std.Build) void {
         }),
     }) });
     const test_step = b.step("test", "Run Zig unit and integration tests");
-    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = native })).step);
-    test_step.dependOn(&b.addRunArtifact(suite).step);
+    for ([_]*std.Build.Step.Compile{ b.addTest(.{ .root_module = native }), suite }) |artifact| {
+        const run = b.addRunArtifact(artifact);
+        addLibraryPath(b, run, target, library_path);
+        test_step.dependOn(&run.step);
+    }
 
     const phpt = b.addSystemCommand(&.{php});
     phpt.addFileArg(phpz_dep.path("tools/php/run-tests.php"));
@@ -83,50 +93,71 @@ pub fn build(b: *std.Build) void {
     phpt.addArg("tests/phpt");
     phpt.setCwd(b.path("."));
     phpt.has_side_effects = true;
+    addLibraryPath(b, phpt, target, library_path);
     b.step("phpt", "Run PHPT tests against the built extension").dependOn(&phpt.step);
 
-    const bench_imports = nativeImports(b, target, .ReleaseFast);
-    const bench_packets = b.createModule(.{
-        .root_source_file = b.path("tests/packets.zig"),
-        .imports = bench_imports[0..1],
-    });
+    const bench_imports = nativeImports(b, target, .ReleaseFast, native_prefix, libdeflate);
     const bench_native = b.createModule(.{
         .root_source_file = b.path("src/native.zig"),
         .target = target,
         .optimize = .ReleaseFast,
         .imports = &bench_imports,
     });
-    const bench_all = bench_imports ++ [_]std.Build.Module.Import{
-        .{ .name = "native", .module = bench_native },
-        .{ .name = "packets", .module = bench_packets },
-    };
+    const bench_all = bench_imports ++ [_]std.Build.Module.Import{.{ .name = "native", .module = bench_native }};
     const bench = b.addExecutable(.{ .name = "bedwire-bench", .root_module = b.createModule(.{
         .root_source_file = b.path("tests/bench/main.zig"),
         .target = target,
         .optimize = .ReleaseFast,
         .imports = &bench_all,
     }) });
-    b.step("bench", "Run native transport and queue benchmarks").dependOn(&b.addRunArtifact(bench).step);
+    const run_bench = b.addRunArtifact(bench);
+    addLibraryPath(b, run_bench, target, library_path);
+    run_bench.addPassthruArgs();
+    b.step("bench", "Run native protocol, session, NBT and transport benchmarks").dependOn(&run_bench.step);
 
-    const php_bench = b.addSystemCommand(&.{ php, "-n", "-d" });
-    php_bench.addPrefixedFileArg("extension=", binary);
-    php_bench.addArg("tests/bench/boundary.php");
-    php_bench.addArtifactArg(b.addExecutable(.{ .name = "bedwire-bench-client", .root_module = b.createModule(.{
+    const client = b.addExecutable(.{ .name = "bedwire-bench-client", .root_module = b.createModule(.{
         .root_source_file = b.path("tests/bench/client.zig"),
         .target = target,
         .optimize = .ReleaseFast,
         .imports = &bench_all,
-    }) }));
+    }) });
+    const install_client = b.addInstallArtifact(client, .{});
+    b.step("bench-client", "Install the out-of-process NetherNet load client").dependOn(&install_client.step);
+    phpt.step.dependOn(&install_client.step);
+
+    const php_bench = b.addSystemCommand(&.{ php, "-n", "-d" });
+    php_bench.addPrefixedFileArg("extension=", binary);
+    php_bench.addArg("tests/bench/boundary.php");
+    php_bench.addArtifactArg(client);
     php_bench.setCwd(b.path("."));
     php_bench.has_side_effects = true;
-    b.step("bench-php", "Run PHP boundary benchmarks").dependOn(&php_bench.step);
+    addLibraryPath(b, php_bench, target, library_path);
+    b.step("bench-php", "Run PHP boundary and end-to-end benchmarks").dependOn(&php_bench.step);
+
+    const docs = b.addExecutable(.{ .name = "bedwire-docs", .root_module = b.createModule(.{
+        .root_source_file = b.path("tools/docs.zig"),
+        .target = b.graph.host,
+        .imports = &.{.{ .name = "bedwire", .module = b.dependency("bedwire", .{ .target = b.graph.host }).module("bedwire") }},
+    }) });
+    const run_docs = b.addRunArtifact(docs);
+    run_docs.addArgs(&.{ "docs/packets.md", "stubs/bedwire_generated.php" });
+    run_docs.setCwd(b.path("."));
+    b.step("docs", "Regenerate the packet reference and IDE stubs from protocol-zig").dependOn(&run_docs.step);
 }
 
-fn nativeImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) [3]std.Build.Module.Import {
+fn nativeImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, native_prefix: []const u8, libdeflate: bool) [3]std.Build.Module.Import {
     const args = .{ .target = target, .optimize = optimize };
     return .{
-        .{ .name = "bedwire", .module = b.dependency("bedwire", args).module("bedwire") },
-        .{ .name = "raknet", .module = b.dependency("zig_raknet", args).module("raknet") },
+        .{ .name = "bedwire", .module = b.dependency("bedwire", .{ .target = target, .optimize = optimize, .libdeflate = libdeflate }).module("bedwire") },
+        .{ .name = "nethernet", .module = b.dependency("nethernet", .{ .target = target, .optimize = optimize, .@"native-prefix" = native_prefix }).module("nethernet") },
         .{ .name = "nbt", .module = b.dependency("nbt", args).module("nbt") },
     };
+}
+
+/// libdatachannel is a shared library, so anything that loads the extension needs it on the search path.
+fn addLibraryPath(b: *std.Build, run: *std.Build.Step.Run, target: std.Build.ResolvedTarget, path: []const u8) void {
+    const name = if (target.result.os.tag == .windows) "PATH" else "LD_LIBRARY_PATH";
+    const separator = if (target.result.os.tag == .windows) ";" else ":";
+    const current = b.graph.environ_map.get(name);
+    run.setEnvironmentVariable(name, if (current) |value| b.fmt("{s}{s}{s}", .{ path, separator, value }) else path);
 }

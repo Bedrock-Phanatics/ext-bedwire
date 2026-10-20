@@ -1,52 +1,55 @@
+//! The PHP-thread side of the network worker: it submits commands and drains events, and never blocks on the network.
 const std = @import("std");
+const nethernet = @import("nethernet");
 
 const Ring = @import("ring.zig").Ring;
 const Worker = @import("worker.zig").Worker;
-const address_mod = @import("address.zig");
 
-pub const Event = enum(u32) { connect = 1, disconnect, packet, receipt_ack, receipt_failed, ping, raw };
-pub const Command = enum(u32) { send = 1, disconnect, encrypt, accept_login, advertise, block, unblock, raw_send };
-pub const Reason = enum(u8) { remote, server, protocol, overload, shutdown };
+pub const Event = enum(u32) { connect = 1, disconnect, packet, login };
+pub const Command = enum(u32) { send = 1, disconnect, accept_login };
+pub const Reason = enum(u8) { remote, server, protocol, overload, shutdown, authentication, timeout };
 
 pub const max_sessions_limit = 1 << 16;
 pub const max_frame_bytes = 4 * 1024 * 1024;
 pub const max_packets_per_batch = 1024;
-pub const key_len = 32;
+pub const max_status_text = 256;
 
 pub const Config = struct {
     address: std.Io.net.IpAddress,
-    advertisement: []const u8,
-    guid: u64 = 0,
     max_sessions: u32 = 1024,
-    encryption: bool = true,
     command_queue_bytes: usize = 16 * 1024 * 1024,
     event_queue_bytes: usize = 16 * 1024 * 1024,
     max_batch_bytes: usize = 4 * 1024 * 1024,
+    /// Packets a session may send per second, 0 disables the limit.
     packet_rate: u32 = 2000,
-    ping_interval_ms: u32 = 2000,
-    max_receipts: u32 = 4096,
-    max_blocked: u32 = 4096,
-    raw_prefixes: []const []const u8 = &.{},
-    raw_rate: u32 = 1000,
-    /// Per source IP, raise it when players come through a proxy.
-    handshake_rate: u32 = 20,
-
-    pub const max_raw_prefixes = 8;
-    pub const max_raw_prefix_len = 16;
+    /// Time a connection gets to finish logging in.
+    login_timeout_ms: u32 = 10_000,
+    stats_interval_ms: u32 = 1000,
+    /// Verify client identities against Minecraft's signing keys, both at signaling and at login.
+    authentication: bool = true,
+    /// Keeps the server identity across restarts so players only confirm it once.
+    identity_file: ?[]const u8 = null,
+    /// Concurrent WebRTC negotiations, which bounds how many players can be joining at once.
+    max_negotiations: u32 = 16,
+    http_workers: u32 = 16,
+    /// Per connection buffering for received and unsent data.
+    receive_queue_bytes: usize = 1024 * 1024,
+    send_buffer_bytes: usize = 16 * 1024 * 1024,
+    port_range_begin: u16 = 0,
+    port_range_end: u16 = 0,
+    udp_mux: bool = false,
 
     pub fn validate(self: Config) !void {
         if (self.max_sessions == 0 or self.max_sessions >= max_sessions_limit) return error.InvalidConfig;
-        if (self.advertisement.len == 0 or self.advertisement.len > 1400) return error.InvalidConfig;
         if (self.max_batch_bytes < 64 * 1024 or self.max_batch_bytes > 64 * 1024 * 1024) return error.InvalidConfig;
         if (self.command_queue_bytes < 1024 * 1024 or self.command_queue_bytes > 1 << 30) return error.InvalidConfig;
         if (self.event_queue_bytes < 2 * (self.max_batch_bytes + 64) or self.event_queue_bytes > 1 << 30) return error.InvalidConfig;
-        if (self.max_receipts == 0 or self.max_receipts > 1 << 20) return error.InvalidConfig;
-        if (self.max_blocked > 1 << 20) return error.InvalidConfig;
-        if (self.ping_interval_ms < 100) return error.InvalidConfig;
-        if (self.handshake_rate == 0 or self.handshake_rate > 1_000_000) return error.InvalidConfig;
-        if (self.raw_prefixes.len > max_raw_prefixes) return error.InvalidConfig;
-        for (self.raw_prefixes) |prefix| if (prefix.len == 0 or prefix.len > max_raw_prefix_len) return error.InvalidConfig;
-        const reserve = (@as(usize, self.max_sessions) + self.max_receipts) * Worker.obligation_bytes;
+        if (self.stats_interval_ms < 10 or self.login_timeout_ms == 0) return error.InvalidConfig;
+        if (self.max_negotiations == 0 or self.max_negotiations > 1024 or self.http_workers == 0 or self.http_workers > 1024) return error.InvalidConfig;
+        if (self.receive_queue_bytes < 64 * 1024 or self.receive_queue_bytes > 64 * 1024 * 1024) return error.InvalidConfig;
+        if (self.send_buffer_bytes < 256 * 1024 or self.send_buffer_bytes > 256 * 1024 * 1024) return error.InvalidConfig;
+        if ((self.port_range_begin == 0) != (self.port_range_end == 0) or self.port_range_begin > self.port_range_end) return error.InvalidConfig;
+        const reserve = @as(usize, self.max_sessions) * Worker.obligation_bytes;
         if (reserve > self.event_queue_bytes / 4) return error.InvalidConfig;
     }
 };
@@ -55,28 +58,54 @@ pub const Statistics = struct {
     sessions: u64 = 0,
     bytes_sent: u64 = 0,
     bytes_received: u64 = 0,
-    datagrams_sent: u64 = 0,
-    datagrams_received: u64 = 0,
     packets_received: u64 = 0,
     batches_sent: u64 = 0,
     packets_rejected: u64 = 0,
+    unreliable_dropped: u64 = 0,
     overload_disconnects: u64 = 0,
     protocol_disconnects: u64 = 0,
+    authentication_failures: u64 = 0,
+    timeouts: u64 = 0,
     connections_refused: u64 = 0,
-    raw_dropped: u64 = 0,
-    blocked_dropped: u64 = 0,
-    transport_errors: u64 = 0,
+    receive_pauses: u64 = 0,
+    event_stalls: u64 = 0,
 };
 
 pub const stat_names = std.meta.fieldNames(Statistics);
+
+/// What the HTTP signaling endpoint reports to clients asking about the server.
+pub const Status = struct {
+    io: std.Io = undefined,
+    mutex: std.Io.Mutex = .init,
+    name: Text = .{},
+    level: Text = .{},
+    max_players: u32 = 0,
+    game_type: i32 = 0,
+
+    pub const Text = struct {
+        bytes: [max_status_text]u8 = undefined,
+        len: usize = 0,
+
+        pub fn set(self: *Text, value: []const u8) void {
+            self.len = @min(value.len, max_status_text);
+            @memcpy(self.bytes[0..self.len], value[0..self.len]);
+        }
+
+        pub fn slice(self: *const Text) []const u8 {
+            return self.bytes[0..self.len];
+        }
+    };
+};
 
 pub const Shared = struct {
     commands: Ring,
     events: Ring,
     live: []std.atomic.Value(u32),
     stats: [stat_names.len]std.atomic.Value(u64),
+    /// The worker waits here, and PHP and every connection signal it.
+    wakeup: nethernet.Wakeup = .{},
+    status: Status = .{},
 
-    sleeping: std.atomic.Value(bool) = .init(false),
     wants_events_space: std.atomic.Value(bool) = .init(false),
     consumer_waiting: std.atomic.Value(bool) = .init(false),
     event_seq: std.atomic.Value(u32) = .init(0),
@@ -84,7 +113,6 @@ pub const Shared = struct {
     stop_timeout_ms: std.atomic.Value(u32) = .init(0),
     exited: std.atomic.Value(bool) = .init(false),
     worker_thread: std.atomic.Value(u64) = .init(0),
-    wake_token: [16]u8,
 
     pub fn storeStats(self: *Shared, stats: Statistics) void {
         inline for (stat_names, 0..) |name, i| self.stats[i].store(@field(stats, name), .monotonic);
@@ -114,16 +142,10 @@ pub fn sessionParts(id: u64) ?struct { index: u32, generation: u32 } {
 }
 
 pub const Delivered = union(Event) {
-    connect: struct { session: u64, address: []const u8, port: u16, guid: u64 },
+    connect: struct { session: u64, address: []const u8, network_id: []const u8, identity: ?[]const u8 },
     disconnect: struct { session: u64, reason: Reason },
     packet: struct { session: u64, bytes: []const u8 },
-    receipt_ack: Value,
-    receipt_failed: Value,
-    ping: Value,
-    raw: struct { address: []const u8, port: u16, bytes: []const u8 },
-
-    /// The receipt ID, or the RTT in milliseconds for pings.
-    pub const Value = struct { session: u64, value: u64 };
+    login: struct { session: u64, name: []const u8, uuid: []const u8, xuid: []const u8 },
 };
 
 pub const SendError = error{ Closed, Backpressure, TooLarge, TooManyPackets, EmptyBatch };
@@ -135,11 +157,7 @@ pub const Host = struct {
     config: Config,
     worker: *Worker,
     thread: ?std.Thread = null,
-    wake_socket: std.Io.net.Socket,
-    wake_target: std.Io.net.IpAddress,
     local_address: std.Io.net.IpAddress,
-    next_receipt: u64 = 1,
-    receipts_pending: usize = 0,
     stopped: bool = false,
 
     pub fn start(allocator: std.mem.Allocator, config: Config) !*Host {
@@ -149,16 +167,13 @@ pub const Host = struct {
         errdefer allocator.destroy(self);
         self.* = .{
             .allocator = allocator,
-            .threaded = std.Io.Threaded.init_single_threaded,
+            .threaded = .init(allocator, .{}),
             .shared = undefined,
             .config = config,
             .worker = undefined,
-            .wake_socket = undefined,
-            .wake_target = undefined,
             .local_address = undefined,
         };
-        self.threaded.allocator = allocator;
-        const threaded_io = self.threaded.io();
+        errdefer self.threaded.deinit();
 
         var commands = try Ring.init(allocator, config.command_queue_bytes);
         errdefer commands.deinit(allocator);
@@ -168,29 +183,18 @@ pub const Host = struct {
         errdefer allocator.free(live);
         @memset(live, .init(0));
 
-        self.shared = .{
-            .commands = commands,
-            .events = events,
-            .live = live,
-            .stats = undefined,
-            .wake_token = undefined,
-        };
+        self.shared = .{ .commands = commands, .events = events, .live = live, .stats = undefined };
         @memset(&self.shared.stats, .init(0));
-        threaded_io.random(&self.shared.wake_token);
+        self.shared.status.io = self.threaded.io();
+        self.shared.status.max_players = config.max_sessions;
 
-        self.worker = try Worker.create(allocator, threaded_io, &self.shared, &self.config);
+        self.worker = try Worker.create(allocator, self.threaded.io(), &self.shared, &self.config);
         errdefer self.worker.destroy();
-        self.local_address = self.worker.listener.localAddress();
+        self.local_address = self.worker.listener.server.socket.address;
+        // The path is only read while the worker starts.
+        self.config.identity_file = null;
 
-        self.wake_target = address_mod.reachable(self.local_address);
-        const bind: std.Io.net.IpAddress = switch (self.wake_target) {
-            .ip4 => .{ .ip4 = .unspecified(0) },
-            .ip6 => .{ .ip6 = .unspecified(0) },
-        };
-        self.wake_socket = try bind.bind(threaded_io, .{ .mode = .dgram, .protocol = .udp });
-        errdefer self.wake_socket.close(threaded_io);
-
-        self.thread = try std.Thread.spawn(.{ .stack_size = 1024 * 1024 }, Worker.run, .{self.worker});
+        self.thread = try std.Thread.spawn(.{ .stack_size = 16 * 1024 * 1024 }, Worker.run, .{self.worker});
         return self;
     }
 
@@ -207,11 +211,10 @@ pub const Host = struct {
         self.stopped = true;
         self.shared.stop_timeout_ms.store(timeout_ms, .monotonic);
         self.shared.stop_requested.store(true, .seq_cst);
-        self.wakeWorker(true);
+        self.shared.wakeup.signal(self.io());
         if (self.thread) |thread| thread.join();
         self.thread = null;
         self.worker.destroy();
-        self.wake_socket.close(self.io());
     }
 
     pub fn destroy(self: *Host) void {
@@ -220,11 +223,22 @@ pub const Host = struct {
         self.shared.commands.deinit(allocator);
         self.shared.events.deinit(allocator);
         allocator.free(self.shared.live);
+        self.threaded.deinit();
         allocator.destroy(self);
     }
 
     pub fn statistics(self: *const Host) Statistics {
         return self.shared.loadStats();
+    }
+
+    pub fn setStatus(self: *Host, name: []const u8, level: []const u8, max_players: u32, game_type: i32) void {
+        const status = &self.shared.status;
+        status.mutex.lockUncancelable(self.io());
+        defer status.mutex.unlock(self.io());
+        status.name.set(name);
+        status.level.set(level);
+        status.max_players = max_players;
+        status.game_type = game_type;
     }
 
     pub fn isLive(self: *const Host, session: u64) bool {
@@ -237,109 +251,91 @@ pub const Host = struct {
         return @min(self.config.max_batch_bytes, max_frame_bytes - 64, self.shared.commands.maxRecord() - 64);
     }
 
-    pub fn send(self: *Host, session: u64, packets: []const []const u8, receipt: bool) SendError!u64 {
-        if (packets.len == 0) return error.EmptyBatch;
-        if (packets.len > max_packets_per_batch) return error.TooManyPackets;
-        var total: usize = 0;
-        for (packets) |packet| {
-            if (packet.len == 0) return error.EmptyBatch;
-            total += 4 + packet.len;
-        }
+    /// Reserves one send record for `count` packets totalling `bytes`, to be filled with `writePacket`.
+    pub fn beginSend(self: *Host, session: u64, count: usize, bytes: usize) SendError!Batch {
+        if (count == 0) return error.EmptyBatch;
+        if (count > max_packets_per_batch) return error.TooManyPackets;
+        const total = 4 * count + bytes;
         if (total > self.maxBatchPayload()) return error.TooLarge;
         if (!self.running() or !self.isLive(session)) return error.Closed;
-        if (receipt and self.receipts_pending >= self.config.max_receipts) return error.Backpressure;
+        const record = self.shared.commands.reserve(@backingInt(Command.send), 8 + total, 0) orelse return error.Backpressure;
+        std.mem.writeInt(u64, record[0..8], session, .little);
+        return .{ .bytes = record, .offset = 8 };
+    }
 
-        const id: u64 = if (receipt) self.next_receipt else 0;
-        const bytes = self.reserve(.send, 16 + total) orelse return error.Backpressure;
-        std.mem.writeInt(u64, bytes[0..8], session, .little);
-        std.mem.writeInt(u64, bytes[8..16], id, .little);
-        var offset: usize = 16;
-        for (packets) |packet| {
-            std.mem.writeInt(u32, bytes[offset..][0..4], @intCast(packet.len), .little);
-            @memcpy(bytes[offset + 4 ..][0..packet.len], packet);
-            offset += 4 + packet.len;
+    pub const Batch = struct {
+        bytes: []u8,
+        offset: usize,
+
+        /// Space for a packet of `len` bytes, already length-prefixed.
+        pub fn packet(self: *Batch, len: usize) []u8 {
+            std.mem.writeInt(u32, self.bytes[self.offset..][0..4], @intCast(len), .little);
+            const out = self.bytes[self.offset + 4 ..][0..len];
+            self.offset += 4 + len;
+            return out;
         }
+    };
+
+    pub fn commitSend(self: *Host, batch: Batch) void {
+        std.debug.assert(batch.offset == batch.bytes.len);
         self.submit();
-        if (receipt) {
-            self.next_receipt += 1;
-            self.receipts_pending += 1;
+    }
+
+    pub fn send(self: *Host, session: u64, packets: []const []const u8) SendError!void {
+        var bytes: usize = 0;
+        for (packets) |packet| {
+            if (packet.len == 0) return error.EmptyBatch;
+            bytes += packet.len;
         }
-        return id;
+        var batch = try self.beginSend(session, packets.len, bytes);
+        for (packets) |packet| @memcpy(batch.packet(packet.len), packet);
+        self.commitSend(batch);
     }
 
     pub fn disconnect(self: *Host, session: u64) SendError!void {
-        return self.sessionCommand(.disconnect, session, &.{}, &.{});
+        return self.sessionCommand(.disconnect, session, &.{});
     }
 
-    pub fn enableEncryption(self: *Host, session: u64, handshake: []const u8, key: *const [key_len]u8) SendError!void {
-        if (handshake.len == 0) return error.EmptyBatch;
-        if (handshake.len > self.maxBatchPayload()) return error.TooLarge;
-        return self.sessionCommand(.encrypt, session, key, handshake);
-    }
-
+    /// For hosts that verified the login themselves, such as offline mode.
     pub fn acceptLogin(self: *Host, session: u64, client_key_der: []const u8) SendError!void {
         if (client_key_der.len == 0 or client_key_der.len > 512) return error.TooLarge;
-        return self.sessionCommand(.accept_login, session, client_key_der, &.{});
-    }
-
-    pub fn setAdvertisement(self: *Host, advertisement: []const u8) SendError!void {
-        if (advertisement.len == 0 or advertisement.len > 1400) return error.TooLarge;
-        return self.globalCommand(.advertise, &.{}, advertisement);
-    }
-
-    pub fn blockAddress(self: *Host, address: std.Io.net.IpAddress, seconds: u32) SendError!void {
-        var head: [8]u8 = undefined;
-        std.mem.writeInt(u64, &head, @as(u64, seconds) * 1000, .little);
-        const key = address_mod.key(address);
-        return self.globalCommand(.block, &head, &key);
-    }
-
-    pub fn unblockAddress(self: *Host, address: std.Io.net.IpAddress) SendError!void {
-        const key = address_mod.key(address);
-        return self.globalCommand(.unblock, &.{}, &key);
-    }
-
-    pub fn sendRaw(self: *Host, address: std.Io.net.IpAddress, payload: []const u8) SendError!void {
-        if (payload.len == 0 or payload.len > 1400) return error.TooLarge;
-        return self.globalCommand(.raw_send, std.mem.asBytes(&address), payload);
+        return self.sessionCommand(.accept_login, session, client_key_der);
     }
 
     pub fn nextEvent(self: *Host) ?Delivered {
         const record = self.shared.events.next() orelse return null;
         const bytes = record.bytes;
         const session = std.mem.readInt(u64, bytes[0..8], .little);
-        const kind: Event = @fromBackingInt(@intCast(record.tag));
-        if (kind == .packet) return .{ .packet = .{ .session = session, .bytes = bytes[8..] } };
-        if (kind == .disconnect) return .{ .disconnect = .{ .session = session, .reason = @fromBackingInt(@intCast(bytes[8])) } };
-        const value: Delivered.Value = .{ .session = session, .value = std.mem.readInt(u64, bytes[8..16], .little) };
-        return switch (kind) {
-            .packet, .disconnect => unreachable,
-            .connect => .{ .connect = .{
-                .session = session,
-                .guid = value.value,
-                .port = std.mem.readInt(u16, bytes[16..18], .little),
-                .address = bytes[18..],
-            } },
-            .receipt_ack => blk: {
-                self.receipts_pending -= 1;
-                break :blk .{ .receipt_ack = value };
+        return switch (@as(Event, @fromBackingInt(@intCast(record.tag)))) {
+            .packet => .{ .packet = .{ .session = session, .bytes = bytes[8..] } },
+            .disconnect => .{ .disconnect = .{ .session = session, .reason = @fromBackingInt(bytes[8]) } },
+            .connect => blk: {
+                const address_len = std.mem.readInt(u16, bytes[8..10], .little);
+                const identity_len = bytes[10];
+                const address = bytes[11..][0..address_len];
+                const identity = bytes[11 + address_len ..][0..identity_len];
+                break :blk .{ .connect = .{
+                    .session = session,
+                    .address = address,
+                    .identity = if (identity_len == 0) null else identity,
+                    .network_id = bytes[11 + address_len + identity_len ..],
+                } };
             },
-            .receipt_failed => blk: {
-                self.receipts_pending -= 1;
-                break :blk .{ .receipt_failed = value };
+            .login => blk: {
+                const name_len = std.mem.readInt(u16, bytes[8..10], .little);
+                break :blk .{ .login = .{
+                    .session = session,
+                    .uuid = bytes[10..46],
+                    .name = bytes[46..][0..name_len],
+                    .xuid = bytes[46 + name_len ..],
+                } };
             },
-            .ping => .{ .ping = value },
-            .raw => .{ .raw = .{
-                .port = @intCast(session),
-                .address = bytes[16..][0..value.value],
-                .bytes = bytes[16 + value.value ..],
-            } },
         };
     }
 
     pub fn releaseEvents(self: *Host) void {
         self.shared.events.release();
-        if (self.shared.wants_events_space.swap(false, .seq_cst)) self.wakeWorker(true);
+        if (self.shared.wants_events_space.swap(false, .seq_cst)) self.shared.wakeup.signal(self.io());
     }
 
     pub fn waitEvents(self: *Host, timeout_ms: u32) void {
@@ -352,36 +348,17 @@ pub const Host = struct {
         self.io().futexWaitTimeout(u32, &self.shared.event_seq.raw, seq, timeout) catch {};
     }
 
-    fn sessionCommand(self: *Host, kind: Command, session: u64, head: []const u8, tail: []const u8) SendError!void {
+    fn sessionCommand(self: *Host, kind: Command, session: u64, tail: []const u8) SendError!void {
         if (!self.running() or !self.isLive(session)) return error.Closed;
-        const bytes = self.reserve(kind, 8 + head.len + tail.len) orelse return error.Backpressure;
+        const bytes = self.shared.commands.reserve(@backingInt(kind), 8 + tail.len, 0) orelse return error.Backpressure;
         std.mem.writeInt(u64, bytes[0..8], session, .little);
-        @memcpy(bytes[8..][0..head.len], head);
-        @memcpy(bytes[8 + head.len ..][0..tail.len], tail);
+        @memcpy(bytes[8..], tail);
         self.submit();
-    }
-
-    fn globalCommand(self: *Host, kind: Command, head: []const u8, tail: []const u8) SendError!void {
-        if (!self.running()) return error.Closed;
-        const bytes = self.reserve(kind, head.len + tail.len) orelse return error.Backpressure;
-        @memcpy(bytes[0..head.len], head);
-        @memcpy(bytes[head.len..][0..tail.len], tail);
-        self.submit();
-    }
-
-    fn reserve(self: *Host, kind: Command, len: usize) ?[]u8 {
-        return self.shared.commands.reserve(@backingInt(kind), len, 0);
     }
 
     fn submit(self: *Host) void {
         self.shared.commands.commit();
         self.shared.commands.publish();
-        self.wakeWorker(false);
-    }
-
-    fn wakeWorker(self: *Host, force: bool) void {
-        if (!self.shared.sleeping.swap(false, .seq_cst) and !force) return;
-        if (self.thread == null) return;
-        self.wake_socket.send(self.io(), &self.wake_target, &self.shared.wake_token) catch {};
+        self.shared.wakeup.signal(self.io());
     }
 };

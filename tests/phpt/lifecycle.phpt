@@ -4,12 +4,13 @@ Servers start, stop idempotently and release everything when destroyed
 bedwire
 --FILE--
 <?php
-const AD = "MCPE;phpt;2193;1.0;0;10;1;w;Survival;1;19132;19133;";
+const OPTIONS = ["max_sessions" => 4, "authentication" => false];
 
-$server = new Bedwire\Server("127.0.0.1", 0, AD, ["max_sessions" => 4]);
+$server = new Bedwire\Server("127.0.0.1", 0, OPTIONS);
 var_dump($server->isRunning());
 $port = $server->getPort();
 var_dump($port > 0);
+$server->setStatus("phpt", "world", 4);
 
 $server->stop(100);
 $server->stop(100);
@@ -17,18 +18,13 @@ var_dump($server->isRunning());
 var_dump($server->getPort() === $port);
 var_dump($server->poll());
 var_dump($server->send(1 << 16, "\x01"));
-try {
-    $server->setAdvertisement(AD);
-} catch (Bedwire\Exception $e) {
-    echo $e->getMessage(), "\n";
-}
 
-$again = new Bedwire\Server("127.0.0.1", $port, AD);
+$again = new Bedwire\Server("127.0.0.1", $port, OPTIONS);
 var_dump($again->getPort() === $port);
 unset($again);
 
-for ($i = 0; $i < 25; $i++) {
-    $cycle = new Bedwire\Server("127.0.0.1", 0, AD, ["max_sessions" => 2]);
+for ($i = 0; $i < 10; $i++) {
+    $cycle = new Bedwire\Server("127.0.0.1", 0, ["max_sessions" => 2, "authentication" => false]);
     if ($i % 2 === 0) {
         $cycle->stop(0);
     }
@@ -45,6 +41,5 @@ bool(true)
 array(0) {
 }
 bool(false)
-server is stopped
 bool(true)
 cycles done

@@ -1,24 +1,22 @@
 .{
     .name = .ext_bedwire,
-    .version = "0.1.0",
+    .version = "0.2.0",
     .fingerprint = 0x374ec9c8fdc6c9c6,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .phpz = .{
-            .url = "git+https://github.com/happystraw/phpz#9c3798fa02309713eeb5a907bd9ee7c3384ad2f0",
-            .hash = "phpz-0.0.0-D3BhOFvoEwAy2Z_VBsW1U8F3n4uCfz5o4F-kIlW9Aag4",
+            .url = "git+https://github.com/TrixNEW/phpz#6a2ba0c0a03d69f8fb9bbfb8855ead3b9dda137f",
+            .hash = "phpz-0.1.0-D3BhOMKSFADSaCwelZeFzt2YrcxZ4LonpEekE7OdUHAT",
         },
         .bedwire = .{
-            .url = "git+https://github.com/Bedrock-Phanatics/bedwire#3df3883aa1f28c492345a1333b08c631acc78b99",
-            .hash = "bedwire-0.2.3-6vrYrejpEABNHXFSgZ0L0PPXRagoNEMuF4UMIu9gl19N",
+            .path = "../bedwire",
         },
-        .zig_raknet = .{
-            .url = "git+https://github.com/Bedrock-Phanatics/raknet-zig?ref=prod-audit#38b1da97f77311a686cbb2c162b479c80f94e70a",
-            .hash = "zig_raknet-0.3.4-1HPoU_pMDADFUDbUNPXiwXnnKBj9bH1LHhgjFQFdd3KH",
+        .nethernet = .{
+            .path = "../nethernet-zig",
         },
         .nbt = .{
-            .url = "git+https://github.com/Bedrock-Phanatics/nbt-zig#e162b97a76099f53d630124a2c6f3e3ff6f6a794",
-            .hash = "nbt-1.1.5-iJUBvvdJBAB2nW0FSVjwF8EPjsEgwIHj1JsVjOzlQ5HS",
+            .url = "git+https://github.com/Bedrock-Phanatics/nbt-zig#26d021f59412b9ab366c09471c443a5b69d53570",
+            .hash = "nbt-1.3.0-iJUBvsFZBQCnPhYiwhOUQ59w0_TgfGfQbAdd1-uL71YO",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "bedwire.stub.php", "bedwire_arginfo.h", "bedwire.h", "src", "tests", "README.md" },

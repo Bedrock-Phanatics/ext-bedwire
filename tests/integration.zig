@@ -1,450 +1,306 @@
 const std = @import("std");
 const bedwire = @import("bedwire");
-const raknet = @import("raknet");
+const nethernet = @import("nethernet");
 const native = @import("native");
-const support = @import("support.zig");
 const packets = @import("packets.zig");
+const support = @import("support.zig");
 
 const testing = std.testing;
-const Client = support.Client;
+const gpa = testing.allocator;
 
-fn expectConnect(host: *native.Host, client: *Client) !u64 {
-    const event = try support.nextEvent(host, 5000, client);
-    if (event != .connect) return error.UnexpectedEvent;
-    return event.connect;
+fn start(overrides: anytype) !*native.Host {
+    return native.Host.start(gpa, support.config(overrides));
 }
 
-fn expectDisconnect(host: *native.Host, client: ?*Client, session: u64, reason: native.Reason) !void {
-    const deadline = support.Deadline.in(host.io(), 15_000);
-    while (!deadline.expired()) {
-        const event = (if (client) |c| support.nextEvent(host, 100, c) else support.nextEvent(host, 100, null)) catch |err| switch (err) {
-            error.Timeout => continue,
-            else => return err,
-        };
-        defer event.deinit();
-        switch (event) {
-            .disconnect => |d| {
-                try testing.expectEqual(session, d.session);
-                try testing.expectEqual(reason, d.reason);
-                return;
-            },
-            .packet, .receipt_ack, .receipt_failed => {},
-            else => return error.UnexpectedEvent,
-        }
+test "a vanilla-shaped client logs in and exchanges batched gameplay" {
+    const host = try start(.{});
+    defer host.destroy();
+    const joined = try support.join(host, .zlib);
+    const client = joined.client;
+    defer client.destroy();
+
+    var a: [64]u8 = undefined;
+    var b: [64]u8 = undefined;
+    var c: [8192]u8 = undefined;
+    @memset(&c, 'x');
+    const first = packets.raw(&a, packets.id(.text), "hello");
+    const second = packets.raw(&b, packets.id(.text), "world");
+    const large = packets.raw(&c, packets.id(.text), c[0..4000]);
+    try host.send(joined.session, &.{ first, second, large });
+    const received = try client.expectPackets(3, 5000);
+    try testing.expectEqualSlices(u8, first, received[0]);
+    try testing.expectEqualSlices(u8, second, received[1]);
+    try testing.expectEqualSlices(u8, large, received[2]);
+
+    try client.send(&.{ first, second });
+    try support.expectPacket(host, joined.session, first);
+    try support.expectPacket(host, joined.session, second);
+
+    try testing.expect(host.statistics().packets_received >= 6);
+}
+
+test "snappy and uncompressed sessions work through the worker" {
+    const host = try start(.{});
+    defer host.destroy();
+    for ([_]packets.Compression{ .snappy, .none }) |algorithm| {
+        const joined = try support.join(host, algorithm);
+        var a: [64]u8 = undefined;
+        const text = packets.raw(&a, packets.id(.text), "compressed");
+        try host.send(joined.session, &.{text});
+        try testing.expectEqualSlices(u8, text, (try joined.client.expectPackets(1, 5000))[0]);
+        joined.client.destroy();
+        try support.expectDisconnect(host, joined.session, .remote);
     }
-    return error.Timeout;
 }
 
-fn startHost(overrides: anytype) !*native.Host {
-    return native.Host.start(testing.allocator, support.config(overrides));
-}
-
-test "a client logs in with encryption and exchanges batched gameplay" {
-    const host = try startHost(.{});
+test "large frames are fragmented and reassembled in order" {
+    const host = try start(.{ .max_batch_bytes = 2 * 1024 * 1024, .event_queue_bytes = 16 * 1024 * 1024, .command_queue_bytes = 8 * 1024 * 1024 });
     defer host.destroy();
-    const client = try Client.connect(host.io(), host.local_address.getPort(), .{});
-    defer client.destroy();
-    const session = try expectConnect(host, client);
-    try testing.expect(host.isLive(session));
+    const joined = try support.join(host, .none);
+    defer joined.client.destroy();
 
-    try support.login(host, client, session, .zlib);
-
-    var storage: [3][64]u8 = undefined;
-    var batch: [3][]const u8 = undefined;
-    for (&batch, 0..) |*packet, i| packet.* = packets.raw(&storage[i], @intCast(1020 + i), "gameplay");
-    _ = try host.send(session, &batch, false);
-    const got = try client.expectPackets(3, 5000);
-    for (batch, got) |sent, received| try testing.expectEqualSlices(u8, sent, received);
-    client.clear();
-
-    var big: [40_000]u8 = undefined;
-    for (&big, 0..) |*byte, i| byte.* = @truncate(i *% 7);
-    const large = packets.raw(&big, 1023, big[4..]);
-    try client.send(&.{ batch[0], large, batch[1] });
-    try support.expectPacket(host, client, session, batch[0]);
-    try support.expectPacket(host, client, session, large);
-    try support.expectPacket(host, client, session, batch[1]);
-
-    const receipt = try host.send(session, &.{batch[2]}, true);
-    try testing.expect(receipt != 0);
-    const ack = try support.nextEvent(host, 5000, client);
-    try testing.expectEqual(support.Owned{ .receipt_ack = receipt }, ack);
-
-    var disconnect: [64]u8 = undefined;
-    _ = try host.send(session, &.{packets.typed(&disconnect, .{ .disconnect = .{ .reason = .unknown, .messages = .empty } })}, false);
-    try host.disconnect(session);
-    try expectDisconnect(host, client, session, .server);
-    try testing.expect(!host.isLive(session));
-    try testing.expectError(error.Closed, host.send(session, &.{batch[0]}, false));
-    try testing.expectError(error.Closed, host.disconnect(session));
-
-    const stats = host.statistics();
-    try testing.expect(stats.bytes_received > 0 and stats.bytes_sent > 0);
-}
-
-test "snappy compression works through the worker" {
-    const host = try startHost(.{});
-    defer host.destroy();
-    const client = try Client.connect(host.io(), host.local_address.getPort(), .{});
-    defer client.destroy();
-    const session = try expectConnect(host, client);
-    try support.login(host, client, session, .snappy);
-
-    var storage: [2048]u8 = undefined;
-    const packet = packets.raw(&storage, 1021, &(@as([2000]u8, @splat('a'))));
-    _ = try host.send(session, &.{packet}, false);
-    try testing.expectEqualSlices(u8, packet, (try client.expectPackets(1, 5000))[0]);
+    const body = try gpa.alloc(u8, 900 * 1024);
+    defer gpa.free(body);
+    for (body, 0..) |*byte, i| byte.* = @truncate(i *% 31);
+    const storage = try gpa.alloc(u8, body.len + 8);
+    defer gpa.free(storage);
+    const big = packets.raw(storage, packets.id(.text), body);
+    try host.send(joined.session, &.{big});
+    try testing.expectEqualSlices(u8, big, (try joined.client.expectPackets(1, 10_000))[0]);
+    try joined.client.send(&.{big});
+    try support.expectPacket(host, joined.session, big);
 }
 
 test "stale session IDs never reach a reused slot" {
-    const host = try startHost(.{ .max_sessions = 1 });
+    const host = try start(.{ .max_sessions = 1 });
     defer host.destroy();
+    const first = try support.join(host, .none);
+    try host.disconnect(first.session);
+    try support.expectDisconnect(host, first.session, .server);
+    first.client.destroy();
 
-    const first = try Client.connect(host.io(), host.local_address.getPort(), .{});
-    const old = try expectConnect(host, first);
-    first.rak.closeNow();
-    first.destroy();
-    try expectDisconnect(host, null, old, .remote);
+    const second = try support.join(host, .none);
+    defer second.client.destroy();
+    try testing.expect(first.session != second.session);
+    var a: [16]u8 = undefined;
+    try testing.expectError(error.Closed, host.send(first.session, &.{packets.raw(&a, packets.id(.text), "x")}));
+    try testing.expectError(error.Closed, host.disconnect(first.session));
+}
 
-    const second = try Client.connect(host.io(), host.local_address.getPort(), .{});
-    defer second.destroy();
-    const fresh = try expectConnect(host, second);
-    try testing.expect(old != fresh);
-    try testing.expectEqual(old & 0xffff, fresh & 0xffff);
-    try testing.expect(!host.isLive(old));
-    try testing.expect(host.isLive(fresh));
-    var storage: [8]u8 = undefined;
-    try testing.expectError(error.Closed, host.send(old, &.{packets.raw(&storage, 1020, "x")}, false));
-    try testing.expectError(error.Closed, host.send(0, &.{packets.raw(&storage, 1020, "x")}, false));
-    try testing.expectError(error.Closed, host.send(std.math.maxInt(u64), &.{packets.raw(&storage, 1020, "x")}, false));
+test "a server disconnect delivers queued packets before the connection closes" {
+    const host = try start(.{});
+    defer host.destroy();
+    const joined = try support.join(host, .none);
+    defer joined.client.destroy();
+    var a: [64]u8 = undefined;
+    const goodbye = packets.typed(&a, .{ .disconnect = .{ .reason = @fromBackingInt(0), .messages = .{ .messages = .{ .message = "bye", .filtered_message = "" } } } });
+    try host.send(joined.session, &.{goodbye});
+    try host.disconnect(joined.session);
+    try testing.expectEqualSlices(u8, goodbye, (try joined.client.expectPackets(1, 5000))[0]);
+    try support.expectDisconnect(host, joined.session, .server);
+    try joined.client.expectClosed(5000);
 }
 
 test "malformed batches close the session with a protocol reason" {
-    const host = try startHost(.{});
+    const host = try start(.{});
     defer host.destroy();
-    const client = try Client.connect(host.io(), host.local_address.getPort(), .{});
-    defer client.destroy();
-    const session = try expectConnect(host, client);
-
-    try client.sendRaw(&.{ 0xfe, 0xff, 0xff, 0xff, 0xff, 0x0f });
-    try expectDisconnect(host, client, session, .protocol);
+    const joined = try support.join(host, .zlib);
+    defer joined.client.destroy();
+    try joined.client.sendRaw("\x00\xff\xff\xff\xff\xff");
+    try support.expectDisconnect(host, joined.session, .protocol);
     try testing.expectEqual(@as(u64, 1), host.statistics().protocol_disconnects);
 }
 
 test "out-of-stage packets from the client are refused" {
-    const host = try startHost(.{});
+    const host = try start(.{});
     defer host.destroy();
-    const client = try Client.connect(host.io(), host.local_address.getPort(), .{});
+    const client = try support.Client.connect(host.io(), host.local_address.getPort());
     defer client.destroy();
-    const session = try expectConnect(host, client);
-
-    try client.sendRaw(&.{ 0xfe, 0x02, 0x01, 0x00 });
-    try expectDisconnect(host, client, session, .protocol);
+    const session = try support.expectConnect(host);
+    var a: [64]u8 = undefined;
+    try client.sendRaw(packets.raw(&a, packets.id(.text), "too early"));
+    try support.expectDisconnect(host, session, .protocol);
 }
 
 test "packets the server stage forbids are dropped, not sent" {
-    const host = try startHost(.{});
+    const host = try start(.{});
     defer host.destroy();
-    const client = try Client.connect(host.io(), host.local_address.getPort(), .{});
+    const client = try support.Client.connect(host.io(), host.local_address.getPort());
     defer client.destroy();
-    const session = try expectConnect(host, client);
-
-    var storage: [16]u8 = undefined;
-    _ = try host.send(session, &.{packets.raw(&storage, 1020, "early")}, false);
-    const receipt = try host.send(session, &.{packets.raw(&storage, 1020, "early")}, true);
-    const event = try support.nextEvent(host, 5000, client);
-    try testing.expectEqual(support.Owned{ .receipt_failed = receipt }, event);
+    const session = try support.expectConnect(host);
+    var a: [64]u8 = undefined;
+    try host.send(session, &.{packets.raw(&a, packets.id(.start_game), "nope")});
+    const deadline = support.Deadline.in(host.io(), 2000);
+    while (host.statistics().packets_rejected == 0 and !deadline.expired()) client.pump(5);
+    try testing.expectEqual(@as(u64, 1), host.statistics().packets_rejected);
     try testing.expectEqual(@as(usize, 0), client.received.items.len);
-    try testing.expect(host.statistics().packets_rejected >= 2);
-    try testing.expect(host.isLive(session));
 }
 
 test "per-session packet rate limit disconnects floods" {
-    const host = try startHost(.{ .packet_rate = 20 });
+    const host = try start(.{ .packet_rate = 50 });
     defer host.destroy();
-    const client = try Client.connect(host.io(), host.local_address.getPort(), .{});
-    defer client.destroy();
-    const session = try expectConnect(host, client);
-    try support.login(host, client, session, .zlib);
-
-    var storage: [8]u8 = undefined;
-    const packet = packets.raw(&storage, 1020, "x");
-    var batch: [64][]const u8 = @splat(packet);
-    try client.send(&batch);
-    try expectDisconnect(host, client, session, .overload);
-    try testing.expectEqual(@as(u64, 1), host.statistics().overload_disconnects);
+    const joined = try support.join(host, .none);
+    defer joined.client.destroy();
+    var a: [64]u8 = undefined;
+    const text = packets.raw(&a, packets.id(.text), "spam");
+    var batch: [200][]const u8 = undefined;
+    @memset(&batch, text);
+    try joined.client.send(&batch);
+    try support.expectDisconnect(host, joined.session, .overload);
 }
 
-test "a full event queue disconnects the flooding session and still reports it" {
-    const host = try startHost(.{ .packet_rate = 0, .event_queue_bytes = 4 * (64 * 1024 + 64) });
+test "a stalled event consumer throttles peers instead of dropping packets" {
+    const host = try start(.{ .event_queue_bytes = 512 * 1024, .max_batch_bytes = 64 * 1024 });
     defer host.destroy();
-    const client = try Client.connect(host.io(), host.local_address.getPort(), .{});
-    defer client.destroy();
-    const session = try expectConnect(host, client);
-    try support.login(host, client, session, .zlib);
+    const joined = try support.join(host, .none);
+    defer joined.client.destroy();
 
-    var storage: [8 * 1024]u8 = undefined;
-    const packet = packets.raw(&storage, 1020, storage[4..]);
-    var sent: usize = 0;
-    while (sent < 200) : (sent += 1) {
-        client.send(&.{packet}) catch break;
-        client.pump(1);
+    var body: [1024]u8 = undefined;
+    const sent = 2000;
+    for (0..sent) |i| {
+        std.mem.writeInt(u32, body[0..4], @intCast(i), .little);
+        var storage: [1100]u8 = undefined;
+        try joined.client.send(&.{packets.raw(&storage, packets.id(.text), &body)});
     }
-    const deadline = support.Deadline.in(host.io(), 10_000);
-    while (host.isLive(session) and !deadline.expired()) client.pump(5);
-    try testing.expect(!host.isLive(session));
-    try expectDisconnect(host, null, session, .overload);
-}
+    // Give the worker time to fill the queue while nothing drains it.
+    try host.io().sleep(.fromMilliseconds(300), .awake);
+    try testing.expect(host.statistics().event_stalls > 0);
 
-test "receipts are bounded on the PHP side" {
-    const host = try startHost(.{ .max_receipts = 2 });
-    defer host.destroy();
-    const client = try Client.connect(host.io(), host.local_address.getPort(), .{});
-    defer client.destroy();
-    const session = try expectConnect(host, client);
-    try support.login(host, client, session, .zlib);
-
-    var storage: [8]u8 = undefined;
-    const packet = packets.raw(&storage, 1020, "r");
-    const a = try host.send(session, &.{packet}, true);
-    const b = try host.send(session, &.{packet}, true);
-    try testing.expectError(error.Backpressure, host.send(session, &.{packet}, true));
-    var acked: usize = 0;
-    while (acked < 2) {
-        const event = try support.nextEvent(host, 5000, client);
-        switch (event) {
-            .receipt_ack => |id| {
-                try testing.expect(id == a or id == b);
-                acked += 1;
-            },
-            else => return error.UnexpectedEvent,
-        }
+    var seen: usize = 0;
+    while (seen < sent) {
+        const event = try support.nextEvent(host, 10_000);
+        defer event.deinit();
+        if (event != .packet) return error.UnexpectedEvent;
+        try testing.expectEqual(@as(u32, @intCast(seen)), std.mem.readInt(u32, event.packet.bytes[1..5], .little));
+        seen += 1;
     }
-    _ = try host.send(session, &.{packet}, true);
-}
-
-test "pending receipts fail when the session closes" {
-    const host = try startHost(.{});
-    defer host.destroy();
-    const client = try Client.connect(host.io(), host.local_address.getPort(), .{});
-    const session = try expectConnect(host, client);
-    try support.login(host, client, session, .zlib);
-    // Vanish without a disconnect so the receipt waits for the idle timeout.
-    client.destroy();
-
-    var storage: [8]u8 = undefined;
-    const receipt = host.send(session, &.{packets.raw(&storage, 1020, "lost")}, true) catch |err| switch (err) {
-        error.Closed => return,
-        else => return err,
-    };
-    var failed = false;
-    var disconnected = false;
-    const deadline = support.Deadline.in(host.io(), 20_000);
-    while (!(failed and disconnected) and !deadline.expired()) {
-        const event = support.nextEvent(host, 100, null) catch continue;
-        switch (event) {
-            .receipt_failed => |id| failed = id == receipt,
-            .receipt_ack => return error.UnexpectedEvent,
-            .disconnect => disconnected = true,
-            else => event.deinit(),
-        }
-    }
-    try testing.expect(failed and disconnected);
+    try testing.expectEqual(@as(u64, 0), host.statistics().overload_disconnects);
 }
 
 test "invalid send arguments are rejected before queueing" {
-    const host = try startHost(.{});
+    const host = try start(.{});
     defer host.destroy();
-    const client = try Client.connect(host.io(), host.local_address.getPort(), .{});
-    defer client.destroy();
-    const session = try expectConnect(host, client);
-
-    try testing.expectError(error.EmptyBatch, host.send(session, &.{}, false));
-    try testing.expectError(error.EmptyBatch, host.send(session, &.{""}, false));
-    const huge = try testing.allocator.alloc(u8, 70 * 1024);
-    defer testing.allocator.free(huge);
-    @memset(huge, 1);
-    try testing.expectError(error.TooLarge, host.send(session, &.{huge}, false));
-    var many: [native.max_packets_per_batch + 1][]const u8 = @splat("x");
-    try testing.expectError(error.TooManyPackets, host.send(session, &many, false));
-    const key: [32]u8 = @splat(0);
-    try testing.expectError(error.EmptyBatch, host.enableEncryption(session, "", &key));
-    try testing.expectError(error.TooLarge, host.setAdvertisement(""));
+    const joined = try support.join(host, .none);
+    defer joined.client.destroy();
+    try testing.expectError(error.EmptyBatch, host.send(joined.session, &.{}));
+    try testing.expectError(error.EmptyBatch, host.send(joined.session, &.{""}));
+    var many: [native.max_packets_per_batch + 1][]const u8 = undefined;
+    @memset(&many, "\x09");
+    try testing.expectError(error.TooManyPackets, host.send(joined.session, &many));
+    const huge = try gpa.alloc(u8, host.maxBatchPayload() + 1);
+    defer gpa.free(huge);
+    try testing.expectError(error.TooLarge, host.send(joined.session, &.{huge}));
+    try testing.expectError(error.Closed, host.send(0, &.{"\x09"}));
 }
 
-test "encryption and login commands in the wrong stage close the session" {
-    const host = try startHost(.{});
+test "accepting a login in the wrong stage closes the session" {
+    const host = try start(.{});
     defer host.destroy();
-    const client = try Client.connect(host.io(), host.local_address.getPort(), .{});
+    const client = try support.Client.connect(host.io(), host.local_address.getPort());
     defer client.destroy();
-    const session = try expectConnect(host, client);
-
-    var storage: [64]u8 = undefined;
-    const key: [32]u8 = @splat(3);
-    try host.enableEncryption(session, packets.typed(&storage, .{ .server_to_client_handshake = .{ .handshake_web_token = "x" } }), &key);
-    try expectDisconnect(host, client, session, .protocol);
-
-    const other = try Client.connect(host.io(), host.local_address.getPort(), .{});
-    defer other.destroy();
-    const second = try expectConnect(host, other);
-    try host.acceptLogin(second, "not a key");
-    try expectDisconnect(host, other, second, .protocol);
+    const session = try support.expectConnect(host);
+    try host.acceptLogin(session, &bedwire.crypto.spki.encode(client.key.public_key));
+    try support.expectDisconnect(host, session, .protocol);
 }
 
-test "logins without encryption need the verified client key" {
-    const host = try startHost(.{ .encryption = false });
+test "a malformed client key fails authentication" {
+    const host = try start(.{});
     defer host.destroy();
-    const client = try Client.connect(host.io(), host.local_address.getPort(), .{});
+    const client = try support.Client.connect(host.io(), host.local_address.getPort());
     defer client.destroy();
-    client.session.policy.encryption = .optional;
-    const session = try expectConnect(host, client);
+    const session = try support.expectConnect(host);
+    try host.acceptLogin(session, "not a key");
+    try support.expectDisconnect(host, session, .authentication);
+}
 
-    var a: [4096]u8 = undefined;
-    var b: [4096]u8 = undefined;
-    const request = packets.request(&a);
-    try client.send(&.{request});
-    try support.expectPacket(host, client, session, request);
-    _ = try host.send(session, &.{packets.networkSettings(&b, .zlib, 1)}, false);
-    _ = try client.expectPackets(1, 5000);
-    const login_packet = packets.login(&a);
-    try client.send(&.{login_packet});
-    try support.expectPacket(host, client, session, login_packet);
+test "sessions that never log in time out" {
+    const host = try start(.{ .login_timeout_ms = 200 });
+    defer host.destroy();
+    const client = try support.Client.connect(host.io(), host.local_address.getPort());
+    defer client.destroy();
+    const session = try support.expectConnect(host);
+    try support.expectDisconnect(host, session, .timeout);
+    try testing.expectEqual(@as(u64, 1), host.statistics().timeouts);
+}
 
-    const der = bedwire.crypto.spki.encode(client.key.public_key);
-    try host.acceptLogin(session, &der);
-    _ = try host.send(session, &.{packets.resourcePacksInfo(&b)}, false);
-    try client.session.advance(.resource_packs);
-    _ = try client.expectPackets(2, 5000);
+test "unreliable messages are dropped without closing the session" {
+    const host = try start(.{});
+    defer host.destroy();
+    const joined = try support.join(host, .none);
+    defer joined.client.destroy();
+    try joined.client.connection.send("\x01\x02", .unreliable);
+    var a: [64]u8 = undefined;
+    const text = packets.raw(&a, packets.id(.text), "after");
+    try joined.client.send(&.{text});
+    try support.expectPacket(host, joined.session, text);
+    try testing.expectEqual(@as(u64, 1), host.statistics().unreliable_dropped);
 }
 
 test "stop closes live sessions with a shutdown reason and is idempotent" {
-    const host = try startHost(.{});
+    const host = try start(.{});
     defer host.destroy();
-    const client = try Client.connect(host.io(), host.local_address.getPort(), .{});
-    defer client.destroy();
-    const session = try expectConnect(host, client);
-
-    host.stop(200);
-    host.stop(200);
+    const joined = try support.join(host, .none);
+    defer joined.client.destroy();
+    host.stop(1000);
     try testing.expect(!host.running());
-    var storage: [8]u8 = undefined;
-    try testing.expectError(error.Closed, host.send(session, &.{packets.raw(&storage, 1020, "x")}, false));
-    try testing.expectError(error.Closed, host.setAdvertisement("MCPE;x"));
-    try expectDisconnect(host, null, session, .shutdown);
-    try testing.expect(!host.isLive(session));
-}
-
-test "advertisement updates reach the next pong" {
-    const host = try startHost(.{});
-    defer host.destroy();
-    var buffer: [1500]u8 = undefined;
-    const address: std.Io.net.IpAddress = .{ .ip4 = .loopback(host.local_address.getPort()) };
-    try testing.expectEqualStrings(support.advertisement, (try raknet.ping(host.io(), address, &buffer, 2000)).advertisement);
-
-    const next = "MCPE;updated;2193;1.0;5;10;1;test;Survival;1;19132;19133;";
-    try host.setAdvertisement(next);
-    const deadline = support.Deadline.in(host.io(), 5000);
-    while (!deadline.expired()) {
-        if (std.mem.eql(u8, next, (try raknet.ping(host.io(), address, &buffer, 2000)).advertisement)) return;
-    }
-    return error.Timeout;
-}
-
-test "blocked addresses cannot connect until unblocked" {
-    const host = try startHost(.{});
-    defer host.destroy();
-    try host.blockAddress(.{ .ip4 = .loopback(0) }, 60);
-    var buffer: [1500]u8 = undefined;
-    const address: std.Io.net.IpAddress = .{ .ip4 = .loopback(host.local_address.getPort()) };
-    const settle = support.Deadline.in(host.io(), 200);
-    while (!settle.expired()) host.waitEvents(10);
-    try testing.expectError(error.Timeout, raknet.ping(host.io(), address, &buffer, 300));
-
-    try host.unblockAddress(.{ .ip4 = .loopback(0) });
-    const deadline = support.Deadline.in(host.io(), 5000);
-    while (!deadline.expired()) {
-        _ = raknet.ping(host.io(), address, &buffer, 300) catch continue;
-        return;
-    }
-    return error.Timeout;
-}
-
-test "raw prefixes are forwarded and answered without RakNet" {
-    const host = try startHost(.{ .raw_prefixes = &.{"\xfe\xfd"} });
-    defer host.destroy();
-    const io = host.io();
-    const local: std.Io.net.IpAddress = .{ .ip4 = .loopback(0) };
-    var socket = try local.bind(io, .{ .mode = .dgram, .protocol = .udp });
-    defer socket.close(io);
-    const server: std.Io.net.IpAddress = .{ .ip4 = .loopback(host.local_address.getPort()) };
-    try socket.send(io, &server, "\xfe\xfd\x09query");
-
-    const event = try support.nextEvent(host, 5000, null);
+    const event = try support.nextEvent(host, 1000);
     defer event.deinit();
-    try testing.expectEqualSlices(u8, "\xfe\xfd\x09query", event.raw.bytes);
-    try testing.expectEqual(socket.address.getPort(), event.raw.port);
-
-    try host.sendRaw(.{ .ip4 = .loopback(event.raw.port) }, "\x09reply");
-    var buffer: [64]u8 = undefined;
-    const reply = try socket.receiveTimeout(io, &buffer, .{ .duration = .{ .raw = .fromMilliseconds(5000), .clock = .awake } });
-    try testing.expectEqualSlices(u8, "\x09reply", reply.data);
+    try testing.expectEqual(native.Reason.shutdown, event.disconnect.reason);
+    host.stop(1000);
+    try testing.expectError(error.Closed, host.send(joined.session, &.{"\x09"}));
 }
 
-test "ping events report transport RTT" {
-    const host = try startHost(.{ .ping_interval_ms = 100 });
+test "authenticated servers refuse anonymous clients at signaling" {
+    const host = try start(.{ .authentication = true });
     defer host.destroy();
-    const client = try Client.connect(host.io(), host.local_address.getPort(), .{});
-    defer client.destroy();
-    const session = try expectConnect(host, client);
-    try support.login(host, client, session, .zlib);
+    try testing.expect(std.meta.isError(support.Client.connect(host.io(), host.local_address.getPort())));
+    try testing.expectEqual(@as(?native.Delivered, null), host.nextEvent());
+}
 
-    const deadline = support.Deadline.in(host.io(), 5000);
-    while (!deadline.expired()) {
-        client.pump(5);
-        while (host.nextEvent()) |event| switch (event) {
-            .ping => |p| {
-                try testing.expectEqual(session, p.session);
-                host.releaseEvents();
-                return;
-            },
-            else => {},
-        };
-        host.releaseEvents();
-    }
-    return error.Timeout;
+test "the signaling endpoint reports the status PHP sets" {
+    const host = try start(.{});
+    defer host.destroy();
+    host.setStatus("Quark \"test\"", "world", 20, 1);
+
+    const io = host.io();
+    const stream = try (std.Io.net.IpAddress{ .ip4 = .loopback(host.local_address.getPort()) }).connect(io, .{ .mode = .stream });
+    defer stream.close(io);
+    var write_buffer: [256]u8 = undefined;
+    var writer = stream.writer(io, &write_buffer);
+    try writer.interface.writeAll("GET /v1/join HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    try writer.interface.flush();
+    var read_buffer: [4096]u8 = undefined;
+    var reader = stream.reader(io, &read_buffer);
+    var body: std.Io.Writer.Allocating = .init(gpa);
+    defer body.deinit();
+    _ = reader.interface.streamRemaining(&body.writer) catch {};
+    const response = body.written();
+    try testing.expect(std.mem.indexOf(u8, response, "\"name\":\"Quark \\\"test\\\"\"") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "\"maxPlayers\":20") != null);
+    try testing.expect(std.mem.indexOf(u8, response, std.fmt.comptimePrint("\"protocol\":{d}", .{bedwire.protocol.protocol_version})) != null);
 }
 
 test "invalid configurations are refused" {
-    try testing.expectError(error.InvalidConfig, native.Host.start(testing.allocator, support.config(.{ .max_sessions = 0 })));
-    try testing.expectError(error.InvalidConfig, native.Host.start(testing.allocator, support.config(.{ .advertisement = "" })));
-    try testing.expectError(error.InvalidConfig, native.Host.start(testing.allocator, support.config(.{ .raw_prefixes = &.{""} })));
-    try testing.expectError(error.InvalidConfig, native.Host.start(testing.allocator, support.config(.{ .event_queue_bytes = 1024 })));
+    try testing.expectError(error.InvalidConfig, start(.{ .max_sessions = 0 }));
+    try testing.expectError(error.InvalidConfig, start(.{ .max_batch_bytes = 1024 }));
+    try testing.expectError(error.InvalidConfig, start(.{ .port_range_begin = 5000 }));
+    try testing.expectError(error.InvalidConfig, start(.{ .receive_queue_bytes = 1 }));
 }
 
 test "a port already in use fails cleanly" {
-    const host = try startHost(.{});
+    const host = try start(.{});
     defer host.destroy();
-    try testing.expect(std.meta.isError(native.Host.start(testing.allocator, support.config(.{ .address = host.local_address }))));
+    try testing.expect(std.meta.isError(start(.{ .address = std.Io.net.IpAddress{ .ip4 = .loopback(host.local_address.getPort()) } })));
 }
 
 test "queued single sends to one session coalesce without reordering" {
-    const host = try startHost(.{});
+    const host = try start(.{});
     defer host.destroy();
-    const client = try Client.connect(host.io(), host.local_address.getPort(), .{});
-    defer client.destroy();
-    const session = try expectConnect(host, client);
-    try support.login(host, client, session, .zlib);
-    const before = host.statistics().batches_sent;
-
-    const count = 2000;
-    var storage: [8]u8 = undefined;
-    for (0..count) |i| {
-        var body: [4]u8 = undefined;
-        std.mem.writeInt(u32, &body, @intCast(i), .little);
-        _ = try host.send(session, &.{packets.raw(&storage, 1020, &body)}, false);
-    }
-    const got = try client.expectPackets(count, 10_000);
-    for (got, 0..) |packet, i| try testing.expectEqual(@as(u32, @intCast(i)), std.mem.readInt(u32, packet[2..6], .little));
-    try testing.expect(host.isLive(session));
-    try testing.expect(host.statistics().batches_sent - before < count);
+    const joined = try support.join(host, .none);
+    defer joined.client.destroy();
+    var storage: [100][16]u8 = undefined;
+    for (&storage, 0..) |*buffer, i| try host.send(joined.session, &.{packets.raw(buffer, packets.id(.text), &.{@intCast(i)})});
+    const received = try joined.client.expectPackets(100, 5000);
+    for (received, 0..) |packet, i| try testing.expectEqual(@as(u8, @intCast(i)), packet[packet.len - 1]);
+    try testing.expect(host.statistics().batches_sent < 100 + 10);
 }

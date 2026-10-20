@@ -1,34 +1,242 @@
-//! Clients run in this process so process CPU includes them.
-
+//! Native benchmarks. Pass section names (codec, session, nbt, ring, transport) to run a subset.
 const std = @import("std");
+const bedwire = @import("bedwire");
+const nethernet = @import("nethernet");
+const nbt = @import("nbt");
 const native = @import("native");
 const peer_mod = @import("peer.zig");
 
+const protocol = bedwire.protocol;
 const Peer = peer_mod.Peer;
-const Ring = native.Ring;
 const allocator = std.heap.smp_allocator;
+const nowNs = peer_mod.nowNs;
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
-    const only = init.environ_map.get("BEDWIRE_BENCH");
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
+    const only = args[1..];
+    if (selected(only, "codec")) try codec(io);
+    if (selected(only, "session")) try session(io);
+    if (selected(only, "nbt")) try nbtBench(io);
     if (selected(only, "ring")) try ringThroughput(io);
-    if (selected(only, "paced")) for ([_]usize{ 1, 100, 1000 }) |sessions| try paced(io, sessions, 64, 5);
-    if (selected(only, "saturated")) {
-        try saturated(io, 64);
-        try saturated(io, 1200);
+    if (selected(only, "transport")) {
+        for ([_]usize{ 1, 50, 200 }) |count| try transport(io, count, 20, 5);
+        try idle(io, 50, 5);
     }
 }
 
-fn selected(only: ?[]const u8, name: []const u8) bool {
-    return only == null or std.mem.eql(u8, only.?, name);
+fn selected(only: []const []const u8, name: []const u8) bool {
+    if (only.len == 0) return true;
+    for (only) |item| if (std.mem.eql(u8, item, name)) return true;
+    return false;
+}
+
+fn report(name: []const u8, ops: usize, ns: u64, bytes: usize) void {
+    const seconds = @as(f64, @floatFromInt(ns)) / 1e9;
+    const per_op = @as(f64, @floatFromInt(ns)) / @as(f64, @floatFromInt(ops));
+    if (bytes == 0) {
+        std.debug.print("{s: <44} {d: >10.1} ns/op {d: >10.2} M ops/s\n", .{ name, per_op, @as(f64, @floatFromInt(ops)) / seconds / 1e6 });
+    } else {
+        std.debug.print("{s: <44} {d: >10.1} ns/op {d: >10.1} MB/s\n", .{ name, per_op, @as(f64, @floatFromInt(bytes)) / seconds / 1e6 });
+    }
+}
+
+/// Repeats `body` until about 300 ms have passed and reports the mean.
+fn measure(io: std.Io, name: []const u8, bytes_per_op: usize, context: anytype, comptime body: fn (@TypeOf(context)) anyerror!void) !void {
+    for (0..1000) |_| try body(context);
+    var ops: usize = 0;
+    const start = nowNs(io);
+    var elapsed: u64 = 0;
+    while (elapsed < 300 * std.time.ns_per_ms) {
+        for (0..256) |_| try body(context);
+        ops += 256;
+        elapsed = nowNs(io) - start;
+    }
+    report(name, ops, elapsed, bytes_per_op * ops);
+}
+
+const Samples = struct {
+    move: []const u8,
+    text: []const u8,
+    chunk: []const u8,
+
+    fn init(storage: *[3][24 * 1024]u8) Samples {
+        var chunk_data: [16 * 1024]u8 = undefined;
+        // Chunk payloads are mostly palette runs, which compress like this.
+        for (&chunk_data, 0..) |*byte, i| byte.* = if (i % 64 < 48) 0 else @truncate(i *% 2654435761 >> 13);
+        return .{
+            .move = peer_mod.typed(&storage[0], .{ .move_player = .{
+                .player_runtime_id = 81234,
+                .position = .{ .x = 128.5, .y = 64, .z = -312.25 },
+                .rotation = .{ .x = 12.5, .y = 270 },
+                .y_head_rotation = 270,
+                .position_mode = @fromBackingInt(0),
+                .on_ground = true,
+                .riding_runtime_id = 0,
+                .teleport_data = null,
+                .tick = 123456,
+            } }),
+            .text = peer_mod.typed(&storage[1], .{ .text = .{
+                .localize = false,
+                .body = .{ .author_and_message = .{ .message_type = .chat, .player_name = "Steve", .message = "hello from the benchmark, this is a chat line" } },
+                .senders_xuid = "2535412345678901",
+                .platform_id = "",
+                .filtered_message = null,
+            } }),
+            .chunk = peer_mod.typed(&storage[2], .{ .level_chunk = .{
+                .chunk_position = .{ .x = 10, .z = -4 },
+                .dimension_id = 0,
+                .sub_chunks_count = 8,
+                .client_request_sub_chunk_limit = null,
+                .cache_enabled = false,
+                .cache_metadata = .empty,
+                .serialized_chunk_data = &chunk_data,
+            } }),
+        };
+    }
+};
+
+fn codec(io: std.Io) !void {
+    std.debug.print("\n== protocol-zig codec (native, borrowed decode) ==\n", .{});
+    var storage: [3][24 * 1024]u8 = undefined;
+    const samples = Samples.init(&storage);
+    const Case = struct { bytes: []const u8, out: [24 * 1024]u8 = undefined };
+    inline for (.{ "move_player", "text", "level_chunk 16 KiB" }, .{ samples.move, samples.text, samples.chunk }) |name, bytes| {
+        var case: Case = .{ .bytes = bytes };
+        try measure(io, "decode " ++ name, bytes.len, &case, struct {
+            fn run(c: *Case) !void {
+                const decoded = try protocol.Current.decodeBorrowed(c.bytes, .{});
+                std.mem.doNotOptimizeAway(&decoded);
+            }
+        }.run);
+        try measure(io, "decode+encode " ++ name, bytes.len, &case, struct {
+            fn run(c: *Case) !void {
+                const decoded = try protocol.typed.decode(c.bytes, .{});
+                var writer = protocol.Writer.init(&c.out);
+                try protocol.typed.encode(&writer, decoded);
+                std.mem.doNotOptimizeAway(writer.written().ptr);
+            }
+        }.run);
+    }
+}
+
+const SessionCase = struct {
+    server: *bedwire.Session,
+    client: *bedwire.Session,
+    batch: []const []const u8,
+    bytes: usize,
+};
+
+fn session(io: std.Io) !void {
+    std.debug.print("\n== Bedwire sessions, gameplay mix of 20 moves, 5 chat lines and 1 chunk ==\n", .{});
+    var storage: [3][24 * 1024]u8 = undefined;
+    const samples = Samples.init(&storage);
+    var batch: [26][]const u8 = undefined;
+    for (batch[0..20]) |*packet| packet.* = samples.move;
+    for (batch[20..25]) |*packet| packet.* = samples.text;
+    batch[25] = samples.chunk;
+    var total: usize = 0;
+    for (batch) |packet| total += packet.len;
+
+    var pool = try bedwire.BufferPool.init(allocator, .{ .max_frame_bytes = 4 * 1024 * 1024, .max_batch_bytes = 1024 * 1024, .max_packet_bytes = 1024 * 1024 }, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+    const policy: bedwire.SessionPolicy = .{ .encryption = .disabled, .batch_header = false };
+    inline for (.{ .deflate, .snappy, .none }) |algorithm| {
+        var server = try bedwire.Session.init(.server, .{ .pool = &pool, .policy = policy });
+        defer server.deinit();
+        var client = try bedwire.Session.init(.client, .{ .pool = &pool, .policy = policy });
+        defer client.deinit();
+        server.state = .in_game;
+        client.state = .in_game;
+        server.compression = .init(server.features());
+        try server.compression.negotiate(algorithm, 256);
+        client.compression = .init(client.features());
+        try client.compression.negotiate(algorithm, 256);
+
+        var case: SessionCase = .{ .server = &server, .client = &client, .batch = &batch, .bytes = total };
+        const frame = try server.encode(&batch);
+        const wire = frame.bytes.len;
+        frame.release();
+        std.debug.print("{s}: {d} B of packets -> {d} B on the wire ({d:.1}%)\n", .{ @tagName(algorithm), total, wire, 100 * @as(f64, @floatFromInt(wire)) / @as(f64, @floatFromInt(total)) });
+        try measure(io, "  encode batch " ++ @tagName(algorithm), total, &case, struct {
+            fn run(c: *SessionCase) !void {
+                const out = try c.server.encode(c.batch);
+                out.release();
+            }
+        }.run);
+        try measure(io, "  encode + ingest batch " ++ @tagName(algorithm), total, &case, struct {
+            fn run(c: *SessionCase) !void {
+                const out = try c.server.encode(c.batch);
+                defer out.release();
+                var packets = try c.client.ingest(out.bytes);
+                defer packets.deinit();
+                while (packets.next()) |packet| std.mem.doNotOptimizeAway(packet.bytes.ptr);
+            }
+        }.run);
+    }
+}
+
+fn nbtBench(io: std.Io) !void {
+    std.debug.print("\n== NBT, a chest block entity with 27 enchanted items ==\n", .{});
+    var compound = nbt.builder.Compound.init(allocator);
+    defer compound.deinit();
+    try compound.add("id", try nbt.builder.string(allocator, "Chest"));
+    try compound.add("x", .{ .int = 100 });
+    try compound.add("y", .{ .int = 64 });
+    try compound.add("z", .{ .int = -20 });
+    const items = try allocator.alloc(nbt.Tag, 27);
+    for (items, 0..) |*item, i| {
+        var entry = nbt.builder.Compound.init(allocator);
+        errdefer entry.deinit();
+        try entry.add("Name", try nbt.builder.string(allocator, "minecraft:diamond_sword"));
+        try entry.add("Count", .{ .byte = 1 });
+        try entry.add("Slot", .{ .byte = @intCast(i) });
+        try entry.add("Damage", .{ .short = 0 });
+        var tag = nbt.builder.Compound.init(allocator);
+        errdefer tag.deinit();
+        try tag.add("Unbreakable", .{ .byte = 1 });
+        try tag.add("display", .{ .compound = .{ .entries = &.{} } });
+        try entry.add("tag", try tag.finish());
+        item.* = try entry.finish();
+    }
+    try compound.add("Items", .{ .list = .{ .element_type = .compound, .items = items } });
+    var document = try nbt.Document.init(allocator, "", try compound.finish());
+    defer document.deinit(allocator);
+
+    inline for (.{ native.nbt.Format.bedrock, native.nbt.Format.network }) |format| {
+        const options = native.nbt.options(format, native.nbt.max_depth);
+        const bytes = try nbt.serialize(allocator, document, options);
+        defer allocator.free(bytes);
+        const Case = struct { bytes: []const u8, options: nbt.Options, document: *const nbt.Document };
+        var case: Case = .{ .bytes = bytes, .options = options, .document = &document };
+        std.debug.print("{s}: {d} B\n", .{ @tagName(format), bytes.len });
+        try measure(io, "  scan " ++ @tagName(format), bytes.len, &case, struct {
+            fn run(c: *Case) !void {
+                std.mem.doNotOptimizeAway(try nbt.scanDocument(c.bytes, c.options));
+            }
+        }.run);
+        try measure(io, "  parse " ++ @tagName(format), bytes.len, &case, struct {
+            fn run(c: *Case) !void {
+                var parsed = try nbt.parse(allocator, c.bytes, c.options);
+                parsed.deinit(allocator);
+            }
+        }.run);
+        try measure(io, "  write " ++ @tagName(format), bytes.len, &case, struct {
+            fn run(c: *Case) !void {
+                const out = try nbt.serialize(allocator, c.document.*, c.options);
+                allocator.free(out);
+            }
+        }.run);
+    }
 }
 
 fn ringThroughput(io: std.Io) !void {
-    var ring = try Ring.init(allocator, 16 * 1024 * 1024);
+    std.debug.print("\n== command/event ring ==\n", .{});
+    var ring = try native.Ring.init(allocator, 16 * 1024 * 1024);
     defer ring.deinit(allocator);
     const total = 20_000_000;
     const Producer = struct {
-        fn run(r: *Ring) void {
+        fn run(r: *native.Ring) void {
             var i: u32 = 0;
             while (i < total) {
                 const bytes = r.reserve(1, 64, 0) orelse {
@@ -44,7 +252,7 @@ fn ringThroughput(io: std.Io) !void {
             r.publish();
         }
     };
-    const start = peer_mod.nowNs(io);
+    const start = nowNs(io);
     const thread = try std.Thread.spawn(.{}, Producer.run, .{&ring});
     var seen: usize = 0;
     while (seen < total) {
@@ -52,60 +260,125 @@ fn ringThroughput(io: std.Io) !void {
         ring.release();
     }
     thread.join();
-    const ns = peer_mod.nowNs(io) - start;
-    std.debug.print("ring  64 B records cross-thread: {d:.1} M/s\n", .{@as(f64, total) / (@as(f64, @floatFromInt(ns)) / 1e9) / 1e6});
+    report("64 B records across threads", total, nowNs(io) - start, 0);
 }
 
-const Clients = struct {
+/// Plays the PHP side: answers each login step and echoes stamped packets.
+const Server = struct {
+    host: *native.Host,
+    /// Any valid key will do, since NetherNet sessions are not encrypted by Bedrock.
+    key: @TypeOf(bedwire.crypto.spki.encode(undefined)),
+    steps: std.AutoHashMapUnmanaged(u64, u8) = .empty,
+    storage: [4][512]u8 = undefined,
+    echoed: usize = 0,
+
+    fn drain(self: *Server) !void {
+        while (self.host.nextEvent()) |event| switch (event) {
+            .packet => |packet| try self.onPacket(packet.session, packet.bytes),
+            else => {},
+        };
+        self.host.releaseEvents();
+    }
+
+    fn onPacket(self: *Server, id: u64, bytes: []const u8) !void {
+        if (bytes[0] == peer_mod.stamp_id) {
+            self.host.send(id, &.{bytes}) catch {};
+            self.echoed += 1;
+            return;
+        }
+        const entry = try self.steps.getOrPut(allocator, id);
+        if (!entry.found_existing) entry.value_ptr.* = 0;
+        defer entry.value_ptr.* += 1;
+        switch (entry.value_ptr.*) {
+            0 => try self.host.send(id, &.{peer_mod.typed(&self.storage[0], .{ .network_settings = .{
+                .compression_threshold = 256,
+                .compression_algorithm = .zlib,
+                .client_throttle_enabled = false,
+                .client_throttle_threshold = 0,
+                .client_throttle_scalar = 0,
+            } })}),
+            1 => {
+                try self.host.acceptLogin(id, &self.key);
+                try self.host.send(id, &.{ peer_mod.raw(&self.storage[1], protocol.Current.packetId(.play_status).?, "\x00\x00\x00\x00"), peer_mod.typed(&self.storage[2], .{ .resource_packs_info = .{
+                    .resource_pack_required = false,
+                    .has_addon_packs = false,
+                    .has_scripts = false,
+                    .force_disable_vibrant_visuals = false,
+                    .world_template_id_and_version = .{ .pack_uuid = @splat(0), .pack_version = "" },
+                    .resource_packs = .empty,
+                } }) });
+            },
+            2 => try self.host.send(id, &.{peer_mod.raw(&self.storage[3], protocol.Current.packetId(.start_game).?, "start")}),
+            else => {},
+        }
+    }
+};
+
+fn startHost(sessions: usize) !*native.Host {
+    return native.Host.start(allocator, .{
+        .address = .{ .ip4 = .loopback(0) },
+        .authentication = false,
+        .max_sessions = @intCast(@max(sessions + 8, 16)),
+        .packet_rate = 0,
+        .max_batch_bytes = 256 * 1024,
+        .event_queue_bytes = 64 * 1024 * 1024,
+        .max_negotiations = 64,
+        .http_workers = 64,
+        .login_timeout_ms = 60_000,
+    });
+}
+
+const Group = struct {
     io: std.Io,
     port: u16,
     count: usize,
     size: usize,
     rate_hz: u32,
-    seconds: u32,
-    saturate: bool = false,
-    quiet: std.atomic.Value(bool) = .init(false),
-    pool: @import("bedwire").BufferPool = undefined,
+    wakeup: nethernet.Wakeup = .{},
+    pool: bedwire.BufferPool = undefined,
     peers: std.ArrayList(*Peer) = .empty,
     latencies: std.ArrayList(u64) = .empty,
     sent: usize = 0,
     ready: std.atomic.Value(bool) = .init(false),
+    sending: std.atomic.Value(bool) = .init(false),
     done: std.atomic.Value(bool) = .init(false),
     failed: ?anyerror = null,
 
-    fn run(self: *Clients) void {
+    fn run(self: *Group) void {
         self.runInner() catch |err| {
             self.failed = err;
         };
         self.ready.store(true, .release);
     }
 
-    fn runInner(self: *Clients) !void {
+    fn runInner(self: *Group) !void {
         self.pool = try peer_mod.clientPool(allocator);
         for (0..self.count) |_| {
-            const peer = try Peer.connect(allocator, self.io, self.port, &self.pool);
+            const peer = try Peer.connect(allocator, self.io, self.port, &self.pool, &self.wakeup);
             try self.peers.append(allocator, peer);
             try peer.login();
             peer.latencies = &self.latencies;
         }
         self.ready.store(true, .release);
         var storage: [2048]u8 = undefined;
-        const interval: u64 = if (self.rate_hz == 0) 0 else std.time.ns_per_s / self.rate_hz;
-        var next = peer_mod.nowNs(self.io);
+        const interval: u64 = std.time.ns_per_s / self.rate_hz;
+        var next = nowNs(self.io);
         while (!self.done.load(.acquire)) {
-            if (!self.quiet.load(.acquire) and (self.saturate or peer_mod.nowNs(self.io) >= next)) {
+            const token = self.wakeup.prepare();
+            if (self.sending.load(.acquire) and nowNs(self.io) >= next) {
                 for (self.peers.items) |peer| {
                     peer.send(&.{peer_mod.stamped(&storage, self.io, self.size)}) catch continue;
                     self.sent += 1;
                 }
                 next += interval;
             }
-            for (self.peers.items) |peer| peer.pump(0);
-            if (!self.saturate) self.io.sleep(.fromMicroseconds(200), .awake) catch {};
+            for (self.peers.items) |peer| peer.pump();
+            const wait = (next -| nowNs(self.io)) / std.time.ns_per_us;
+            self.wakeup.wait(self.io, token, .{ .duration = .{ .raw = .fromMicroseconds(@intCast(@max(wait, 100))), .clock = .awake } }) catch {};
         }
     }
 
-    fn deinit(self: *Clients) void {
+    fn deinit(self: *Group) void {
         for (self.peers.items) |peer| peer.destroy();
         self.peers.deinit(allocator);
         self.latencies.deinit(allocator);
@@ -113,69 +386,57 @@ const Clients = struct {
     }
 };
 
-fn respond(host: *native.Host, steps: *std.AutoHashMapUnmanaged(u64, u8), session: u64) !void {
-    var storage: [3][256]u8 = undefined;
-    const packets = peer_mod.serverPackets(&storage);
-    const entry = try steps.getOrPut(allocator, session);
-    if (!entry.found_existing) entry.value_ptr.* = 0;
-    const step = entry.value_ptr.*;
-    entry.value_ptr.* += 1;
-    switch (step) {
-        0 => _ = try host.send(session, &.{packets[0]}, false),
-        1 => {
-            const der = peer_mod.publicKeyDer();
-            try host.acceptLogin(session, &der);
-            _ = try host.send(session, &.{packets[1]}, false);
-        },
-        2 => _ = try host.send(session, &.{packets[2]}, false),
-        else => {},
-    }
-}
-
-fn startHost(sessions: usize) !*native.Host {
-    return native.Host.start(allocator, .{
-        .address = .{ .ip4 = .loopback(0) },
-        .advertisement = "MCPE;bench;2193;1.0;0;10;1;w;Survival;1;19132;19133;",
-        .max_sessions = @intCast(@max(sessions + 8, 16)),
-        .encryption = false,
-        .packet_rate = 0,
-        .handshake_rate = 10_000,
-        .max_batch_bytes = 256 * 1024,
-        .event_queue_bytes = 64 * 1024 * 1024,
-    });
-}
-
-fn workerCpuMs(host: *native.Host) u64 {
-    const tid = host.shared.worker_thread.load(.acquire);
+fn threadCpuNs(io: std.Io, tid: u64) u64 {
+    if (@import("builtin").os.tag != .linux) return 0;
     var path: [64]u8 = undefined;
     const name = std.fmt.bufPrint(&path, "/proc/self/task/{d}/stat", .{tid}) catch return 0;
     var buffer: [1024]u8 = undefined;
-    const stat = std.Io.Dir.cwd().readFile(host.io(), name, &buffer) catch return 0;
-    const len = stat.len;
+    const len = (std.Io.Dir.cwd().readFile(io, name, &buffer) catch return 0).len;
     const close = std.mem.lastIndexOfScalar(u8, buffer[0..len], ')') orelse return 0;
     var fields = std.mem.tokenizeScalar(u8, buffer[close + 2 .. len], ' ');
     var i: usize = 0;
-    var total: u64 = 0;
+    var ticks: u64 = 0;
     while (fields.next()) |field| : (i += 1) {
-        // utime and stime are fields 14 and 15, counting from field 3 here.
-        if (i == 11 or i == 12) total += std.fmt.parseInt(u64, field, 10) catch 0;
+        // utime and stime are fields 14 and 15 of the file, 11 and 12 after the command name.
+        if (i == 11 or i == 12) ticks += std.fmt.parseInt(u64, field, 10) catch 0;
         if (i == 12) break;
     }
-    return total * 10;
+    return ticks * 10 * std.time.ns_per_ms;
 }
 
-fn cpuMs() u64 {
+fn processCpuNs() u64 {
     const usage = std.posix.getrusage(std.posix.rusage.SELF);
-    const user: u64 = @intCast(usage.utime.sec * 1000 + @divTrunc(usage.utime.usec, 1000));
-    const system: u64 = @intCast(usage.stime.sec * 1000 + @divTrunc(usage.stime.usec, 1000));
+    const user: u64 = @intCast(usage.utime.sec * std.time.ns_per_s + usage.utime.usec * std.time.ns_per_us);
+    const system: u64 = @intCast(usage.stime.sec * std.time.ns_per_s + usage.stime.usec * std.time.ns_per_us);
     return user + system;
 }
 
-fn paced(io: std.Io, sessions: usize, size: usize, seconds: u32) !void {
+fn rssBytes(io: std.Io) u64 {
+    if (@import("builtin").os.tag != .linux) return 0;
+    var buffer: [4096]u8 = undefined;
+    const len = (std.Io.Dir.cwd().readFile(io, "/proc/self/status", &buffer) catch return 0).len;
+    const start = std.mem.indexOf(u8, buffer[0..len], "VmRSS:") orelse return 0;
+    var fields = std.mem.tokenizeAny(u8, buffer[start + 6 .. len], " \t\n");
+    return (std.fmt.parseInt(u64, fields.next() orelse return 0, 10) catch 0) * 1024;
+}
+
+fn percentile(sorted: []const u64, p: f64) f64 {
+    if (sorted.len == 0) return 0;
+    const index: usize = @intFromFloat(@min(@as(f64, @floatFromInt(sorted.len - 1)), p * @as(f64, @floatFromInt(sorted.len))));
+    return @as(f64, @floatFromInt(sorted[index])) / 1000;
+}
+
+/// Clients send a stamped packet at `rate_hz`, the host echoes it, and the clients record round trips.
+fn transport(io: std.Io, sessions: usize, rate_hz: u32, seconds: u32) !void {
+    std.debug.print("\n== NetherNet end to end: {d} sessions, {d} Hz each, 64 B packets, {d} s ==\n", .{ sessions, rate_hz, seconds });
+    const rss_before = rssBytes(io);
     const host = try startHost(sessions);
     defer host.destroy();
-    const groups = @max(1, sessions / 100);
-    const clients = try allocator.alloc(Clients, groups);
+    var server: Server = .{ .host = host, .key = bedwire.crypto.spki.encode(bedwire.crypto.spki.Ecdsa.KeyPair.generate(io).public_key) };
+    defer server.steps.deinit(allocator);
+
+    const groups = @max(1, sessions / 50);
+    const clients = try allocator.alloc(Group, groups);
     defer allocator.free(clients);
     const threads = try allocator.alloc(std.Thread, groups);
     defer allocator.free(threads);
@@ -184,149 +445,77 @@ fn paced(io: std.Io, sessions: usize, size: usize, seconds: u32) !void {
     defer for (threads[0..started]) |thread| thread.join();
     defer for (clients[0..started]) |*group| group.done.store(true, .release);
 
-    var steps: std.AutoHashMapUnmanaged(u64, u8) = .empty;
-    defer steps.deinit(allocator);
+    const join_start = nowNs(io);
     for (clients, threads, 0..) |*group, *thread, i| {
         const count = sessions / groups + @intFromBool(i < sessions % groups);
-        group.* = .{ .io = io, .port = host.local_address.getPort(), .count = count, .size = size, .rate_hz = 20, .seconds = seconds };
-        thread.* = try std.Thread.spawn(.{}, Clients.run, .{group});
+        group.* = .{ .io = io, .port = host.local_address.getPort(), .count = count, .size = 64, .rate_hz = rate_hz };
+        thread.* = try std.Thread.spawn(.{}, Group.run, .{group});
         started += 1;
     }
     for (clients) |*group| {
-        while (!group.ready.load(.acquire)) try drainLogin(host, &steps);
+        while (!group.ready.load(.acquire)) {
+            host.waitEvents(2);
+            try server.drain();
+        }
         if (group.failed) |err| return err;
     }
+    const join_ms = @as(f64, @floatFromInt(nowNs(io) - join_start)) / 1e6;
+    const rss_joined = rssBytes(io);
+    std.debug.print("joined in {d:.0} ms ({d:.1} ms per session, sequential per client thread)\n", .{ join_ms, join_ms / @as(f64, @floatFromInt(sessions)) * @as(f64, @floatFromInt(groups)) });
 
-    var inbound: std.ArrayList(u64) = .empty;
-    defer inbound.deinit(allocator);
-    const cpu_start = cpuMs();
-    const worker_start = workerCpuMs(host);
-    const start = peer_mod.nowNs(io);
+    for (clients) |*group| group.sending.store(true, .release);
+    const worker = host.shared.worker_thread.load(.acquire);
+    const cpu_start = processCpuNs();
+    const worker_start = threadCpuNs(io, worker);
+    const start = nowNs(io);
     const end = start + @as(u64, seconds) * std.time.ns_per_s;
-    var events: usize = 0;
-    while (peer_mod.nowNs(io) < end) {
+    while (nowNs(io) < end) {
         host.waitEvents(5);
-        const now = peer_mod.nowNs(io);
-        while (host.nextEvent()) |event| switch (event) {
-            .packet => |p| if (p.bytes.len >= 10) {
-                try inbound.append(allocator, now -| std.mem.readInt(u64, p.bytes[2..10], .little));
-                events += 1;
-            },
-            else => {},
-        };
-        host.releaseEvents();
+        try server.drain();
     }
-    const cpu = cpuMs() - cpu_start;
-    const worker_cpu = workerCpuMs(host) - worker_start;
-    std.mem.sort(u64, inbound.items, {}, std.sort.asc(u64));
-    std.debug.print("paced {d:>4} sessions x 20 Hz x {d} B: {d} events/s, inbound p50 {d} us p99 {d} us, worker CPU {d:.1}%, process CPU {d:.1}%\n", .{
-        sessions,
-        size,
-        events / seconds,
-        peer_mod.percentile(inbound.items, 0.5) / 1000,
-        peer_mod.percentile(inbound.items, 0.99) / 1000,
-        @as(f64, @floatFromInt(worker_cpu)) / @as(f64, @floatFromInt(seconds * 1000)) * 100,
-        @as(f64, @floatFromInt(cpu)) / @as(f64, @floatFromInt(seconds * 1000)) * 100,
-    });
+    const elapsed = nowNs(io) - start;
+    for (clients) |*group| group.sending.store(false, .release);
+    const worker_ns = threadCpuNs(io, worker) - worker_start;
+    const process_ns = processCpuNs() - cpu_start;
 
-    var storage: [2048]u8 = undefined;
-    const ids = try sessionIds(allocator, &steps);
-    defer allocator.free(ids);
-    const out_end = peer_mod.nowNs(io) + 2 * std.time.ns_per_s;
-    var tick = peer_mod.nowNs(io);
-    while (peer_mod.nowNs(io) < out_end) {
-        if (peer_mod.nowNs(io) >= tick) {
-            for (ids) |id| _ = host.send(id, &.{peer_mod.stamped(&storage, io, size)}, false) catch {};
-            tick += std.time.ns_per_s / 20;
-        }
-        while (host.nextEvent()) |_| {}
-        host.releaseEvents();
-        host.waitEvents(1);
+    var latencies: std.ArrayList(u64) = .empty;
+    defer latencies.deinit(allocator);
+    var sent: usize = 0;
+    for (clients) |*group| {
+        sent += group.sent;
+        try latencies.appendSlice(allocator, group.latencies.items);
     }
-    for (clients) |*group| group.done.store(true, .release);
-    for (threads) |thread| thread.join();
-    var outbound: std.ArrayList(u64) = .empty;
-    defer outbound.deinit(allocator);
-    for (clients) |*group| try outbound.appendSlice(allocator, group.latencies.items);
-    for (clients) |*group| group.deinit();
-    started = 0;
-    std.mem.sort(u64, outbound.items, {}, std.sort.asc(u64));
-    std.debug.print("      outbound p50 {d} us p99 {d} us over {d} packets\n", .{
-        peer_mod.percentile(outbound.items, 0.5) / 1000,
-        peer_mod.percentile(outbound.items, 0.99) / 1000,
-        outbound.items.len,
-    });
+    std.mem.sort(u64, latencies.items, {}, std.sort.asc(u64));
+    const seconds_f = @as(f64, @floatFromInt(elapsed)) / 1e9;
+    std.debug.print("sent {d}, echoed {d}, received back {d} ({d:.0} msg/s each way)\n", .{ sent, server.echoed, latencies.items.len, @as(f64, @floatFromInt(server.echoed)) / seconds_f });
+    std.debug.print("round trip us: p50 {d:.0}  p95 {d:.0}  p99 {d:.0}  max {d:.0}\n", .{ percentile(latencies.items, 0.5), percentile(latencies.items, 0.95), percentile(latencies.items, 0.99), percentile(latencies.items, 1.0) });
+    std.debug.print("worker thread CPU {d:.1}% of one core, whole process (clients included) {d:.1}%\n", .{ 100 * @as(f64, @floatFromInt(worker_ns)) / @as(f64, @floatFromInt(elapsed)), 100 * @as(f64, @floatFromInt(process_ns)) / @as(f64, @floatFromInt(elapsed)) });
+    std.debug.print("RSS growth with sessions (both ends in process): {d:.1} MiB, {d:.0} KiB per session pair\n", .{ @as(f64, @floatFromInt(rss_joined -| rss_before)) / 1048576, @as(f64, @floatFromInt(rss_joined -| rss_before)) / 1024 / @as(f64, @floatFromInt(sessions)) });
 }
 
-fn saturated(io: std.Io, size: usize) !void {
-    const host = try startHost(1);
+/// Logged-in sessions that send nothing, to show what an idle server costs.
+fn idle(io: std.Io, sessions: usize, seconds: u32) !void {
+    std.debug.print("\n== idle: {d} logged-in sessions, no traffic, {d} s ==\n", .{ sessions, seconds });
+    const host = try startHost(sessions);
     defer host.destroy();
-    var clients: Clients = .{ .io = io, .port = host.local_address.getPort(), .count = 1, .size = size, .rate_hz = 0, .seconds = 3, .saturate = true };
-    defer clients.deinit();
-    const thread = try std.Thread.spawn(.{}, Clients.run, .{&clients});
-    defer thread.join();
-    defer clients.done.store(true, .release);
-
-    var steps: std.AutoHashMapUnmanaged(u64, u8) = .empty;
-    defer steps.deinit(allocator);
-    while (!clients.ready.load(.acquire)) try drainLogin(host, &steps);
-    if (clients.failed) |err| return err;
-
-    const start = peer_mod.nowNs(io);
-    var events: usize = 0;
-    var bytes: usize = 0;
-    while (peer_mod.nowNs(io) - start < 3 * std.time.ns_per_s) {
-        host.waitEvents(5);
-        while (host.nextEvent()) |event| switch (event) {
-            .packet => |p| {
-                events += 1;
-                bytes += p.bytes.len;
-            },
-            .disconnect => |d| std.debug.print("  disconnected: {t}\n", .{d.reason}),
-            else => {},
-        };
-        host.releaseEvents();
+    var server: Server = .{ .host = host, .key = bedwire.crypto.spki.encode(bedwire.crypto.spki.Ecdsa.KeyPair.generate(io).public_key) };
+    defer server.steps.deinit(allocator);
+    var group: Group = .{ .io = io, .port = host.local_address.getPort(), .count = sessions, .size = 64, .rate_hz = 1 };
+    const thread = try std.Thread.spawn(.{}, Group.run, .{&group});
+    defer {
+        group.done.store(true, .release);
+        thread.join();
+        group.deinit();
     }
-    std.debug.print("inbound saturated {d} B: {d} packets/s ({d:.1} MiB/s)\n", .{ size, events / 3, @as(f64, @floatFromInt(bytes)) / 3 / 1024 / 1024 });
-
-    clients.quiet.store(true, .release);
-
-    const ids = try sessionIds(allocator, &steps);
-    defer allocator.free(ids);
-    var storage: [2048]u8 = undefined;
-    const packet = peer_mod.stamped(&storage, io, size);
-    for ([_]usize{ 1, 16 }) |per_call| {
-        var batch: [16][]const u8 = @splat(packet);
-        var calls: usize = 0;
-        var spent: u64 = 0;
-        for (0..50) |_| {
-            for (0..128) |_| {
-                const before = peer_mod.nowNs(io);
-                _ = try host.send(ids[0], batch[0..per_call], false);
-                spent += peer_mod.nowNs(io) - before;
-                calls += 1;
-            }
-            io.sleep(.fromMilliseconds(20), .awake) catch {};
-            while (host.nextEvent()) |_| {}
-            host.releaseEvents();
-        }
-        std.debug.print("send {d:>2} x {d} B per call: {d} ns/call, {d} ns/packet\n", .{ per_call, size, spent / calls, spent / calls / per_call });
+    while (!group.ready.load(.acquire)) {
+        host.waitEvents(2);
+        try server.drain();
     }
-}
-
-fn drainLogin(host: *native.Host, steps: *std.AutoHashMapUnmanaged(u64, u8)) !void {
-    host.waitEvents(2);
-    while (host.nextEvent()) |event| switch (event) {
-        .packet => |p| try respond(host, steps, p.session),
-        else => {},
-    };
-    host.releaseEvents();
-}
-
-fn sessionIds(gpa: std.mem.Allocator, steps: *std.AutoHashMapUnmanaged(u64, u8)) ![]u64 {
-    const ids = try gpa.alloc(u64, steps.count());
-    var keys = steps.keyIterator();
-    var i: usize = 0;
-    while (keys.next()) |key| : (i += 1) ids[i] = key.*;
-    return ids;
+    if (group.failed) |err| return err;
+    const worker = host.shared.worker_thread.load(.acquire);
+    const worker_start = threadCpuNs(io, worker);
+    const start = nowNs(io);
+    try io.sleep(.fromSeconds(seconds), .awake);
+    const elapsed = nowNs(io) - start;
+    std.debug.print("worker thread CPU {d:.2}% of one core\n", .{100 * @as(f64, @floatFromInt(threadCpuNs(io, worker) - worker_start)) / @as(f64, @floatFromInt(elapsed))});
 }
