@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) void {
     const native_prefix = b.option([]const u8, "native-prefix", "Install prefix of nethernet-zig's patched libdatachannel") orelse
         b.graph.environ_map.get("NETHERNET_NATIVE_PREFIX") orelse ".deps/native";
 
-    const libdeflate = b.option(bool, "libdeflate", "Compress session batches with libdeflate instead of std's deflate") orelse false;
+    const libdeflate = b.option(bool, "libdeflate", "Compress session batches with libdeflate rather than std's deflate") orelse true;
     const imports = nativeImports(b, target, optimize, native_prefix, libdeflate);
     const native = b.createModule(.{
         .root_source_file = b.path("src/native.zig"),

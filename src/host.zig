@@ -150,9 +150,33 @@ pub const Delivered = union(Event) {
 
 pub const SendError = error{ Closed, Backpressure, TooLarge, TooManyPackets, EmptyBatch };
 
+/// One Io for every server in the process. std's Threaded installs a SIGIO handler and restores the previous
+/// one on deinit, so overlapping instances, such as a new server built before the old one is freed, would
+/// leave the process with the default action and the next cancellation signal would kill it.
+const shared_io = struct {
+    var lock: std.atomic.Value(bool) = .init(false);
+    var users: usize = 0;
+    var threaded: std.Io.Threaded = undefined;
+
+    fn acquire() std.Io {
+        while (lock.swap(true, .acquire)) std.atomic.spinLoopHint();
+        defer lock.store(false, .release);
+        if (users == 0) threaded = .init(std.heap.c_allocator, .{});
+        users += 1;
+        return threaded.io();
+    }
+
+    fn release() void {
+        while (lock.swap(true, .acquire)) std.atomic.spinLoopHint();
+        defer lock.store(false, .release);
+        users -= 1;
+        if (users == 0) threaded.deinit();
+    }
+};
+
 pub const Host = struct {
     allocator: std.mem.Allocator,
-    threaded: std.Io.Threaded,
+    io_handle: std.Io,
     shared: Shared,
     config: Config,
     worker: *Worker,
@@ -167,13 +191,13 @@ pub const Host = struct {
         errdefer allocator.destroy(self);
         self.* = .{
             .allocator = allocator,
-            .threaded = .init(allocator, .{}),
+            .io_handle = shared_io.acquire(),
             .shared = undefined,
             .config = config,
             .worker = undefined,
             .local_address = undefined,
         };
-        errdefer self.threaded.deinit();
+        errdefer shared_io.release();
 
         var commands = try Ring.init(allocator, config.command_queue_bytes);
         errdefer commands.deinit(allocator);
@@ -185,10 +209,10 @@ pub const Host = struct {
 
         self.shared = .{ .commands = commands, .events = events, .live = live, .stats = undefined };
         @memset(&self.shared.stats, .init(0));
-        self.shared.status.io = self.threaded.io();
+        self.shared.status.io = self.io_handle;
         self.shared.status.max_players = config.max_sessions;
 
-        self.worker = try Worker.create(allocator, self.threaded.io(), &self.shared, &self.config);
+        self.worker = try Worker.create(allocator, self.io_handle, &self.shared, &self.config);
         errdefer self.worker.destroy();
         self.local_address = self.worker.listener.server.socket.address;
         // The path is only read while the worker starts.
@@ -199,7 +223,7 @@ pub const Host = struct {
     }
 
     pub fn io(self: *Host) std.Io {
-        return self.threaded.io();
+        return self.io_handle;
     }
 
     pub fn running(self: *const Host) bool {
@@ -223,7 +247,7 @@ pub const Host = struct {
         self.shared.commands.deinit(allocator);
         self.shared.events.deinit(allocator);
         allocator.free(self.shared.live);
-        self.threaded.deinit();
+        shared_io.release();
         allocator.destroy(self);
     }
 

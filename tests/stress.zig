@@ -69,3 +69,14 @@ test "several clients join concurrently and keep their own ordering" {
         }
     }
 }
+
+test "servers whose lifetimes overlap keep the process alive" {
+    for (0..build_options.stress_rounds) |_| {
+        const first = try native.Host.start(gpa, support.config(.{}));
+        const second = try native.Host.start(gpa, support.config(.{}));
+        first.destroy();
+        const joined = try support.join(second, .none);
+        joined.client.destroy();
+        second.destroy();
+    }
+}

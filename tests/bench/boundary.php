@@ -152,5 +152,5 @@ foreach ([[1, 20], [50, 20], [200, 20]] as [$sessions, $rate]) {
     proc_close($process);
     $stats = $server->getStatistics();
     $server->stop(500);
-    printf("%d sessions at %d Hz: echoed %d, PHP thread CPU %.1f%% (includes the join phase), client %s, worker stalls %d\n", $sessions, $rate, $echoed, 100 * $cpu / $wall, $summary, $stats["event_stalls"]);
+    printf("%d sessions at %d Hz: echoed %d, process CPU %.1f%% of one core (PHP, worker and WebRTC threads, joins included), client %s, worker stalls %d\n", $sessions, $rate, $echoed, 100 * $cpu / $wall, $summary, $stats["event_stalls"]);
 }
