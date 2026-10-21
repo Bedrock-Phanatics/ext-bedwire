@@ -344,3 +344,83 @@ test "LAN discovery advertises the status and accepts a LAN join" {
     try host.send(session, &.{text});
     try testing.expectEqualSlices(u8, text, (try client.expectPackets(1, 5000))[0]);
 }
+
+test "raw batches are split natively and sent in order" {
+    const host = try start(.{});
+    defer host.destroy();
+    const joined = try support.join(host, .zlib);
+    defer joined.client.destroy();
+
+    var first: [64]u8 = undefined;
+    var second: [400]u8 = undefined;
+    const body: [300]u8 = @splat('y');
+    const a = packets.raw(&first, packets.id(.text), "short");
+    const b = packets.raw(&second, packets.id(.text), &body);
+    var batch: [512]u8 = undefined;
+    var len: usize = 0;
+    for ([_][]const u8{ a, b }) |packet| {
+        len += bedwire.framing.varint.writeU32(batch[len..], @intCast(packet.len)) catch unreachable;
+        @memcpy(batch[len..][0..packet.len], packet);
+        len += packet.len;
+    }
+    try host.sendRawBatch(joined.session, batch[0..len]);
+    const received = try joined.client.expectPackets(2, 5000);
+    try testing.expectEqualSlices(u8, a, received[0]);
+    try testing.expectEqualSlices(u8, b, received[1]);
+
+    try testing.expectError(error.MalformedBatch, host.sendRawBatch(joined.session, batch[0 .. len - 1]));
+    try testing.expectError(error.MalformedBatch, host.sendRawBatch(joined.session, &.{ 0x80, 0x80, 0x80, 0x80, 0x80, 0x01 }));
+    try testing.expectError(error.EmptyBatch, host.sendRawBatch(joined.session, ""));
+}
+
+test "the unreliable channel works both ways when enabled" {
+    const host = try start(.{ .unreliable_events = true });
+    defer host.destroy();
+    const joined = try support.join(host, .none);
+    defer joined.client.destroy();
+
+    try joined.client.connection.send("\x05voice", .unreliable);
+    const event = try support.nextEvent(host, 5000);
+    defer event.deinit();
+    try testing.expectEqual(joined.session, event.unreliable.session);
+    try testing.expectEqualStrings("\x05voice", event.unreliable.bytes);
+
+    try host.sendUnreliable(joined.session, "\x06reply");
+    const deadline = support.Deadline.in(host.io(), 5000);
+    while (joined.client.unreliable.items.len == 0 and !deadline.expired()) joined.client.pump(5);
+    try testing.expectEqualStrings("\x06reply", joined.client.unreliable.items[0]);
+    try testing.expectError(error.EmptyBatch, host.sendUnreliable(joined.session, ""));
+}
+
+test "trusted proxies pass authenticated signaling and logins fall back to PHP" {
+    const proxy = nethernet.IdentityKeyPair.generate(std.testing.io);
+    const der = bedwire.crypto.spki.encode(proxy.public_key);
+    const host = try start(.{ .authentication = true, .trusted_identity_keys = &.{&der} });
+    defer host.destroy();
+
+    const token = try nethernet.identity.serverToken(gpa, proxy, std.Io.Clock.real.now(host.io()).toSeconds());
+    defer gpa.free(token);
+    var options = support.Client.options;
+    options.allow_anonymous = false;
+    options.identity = .{ .key = proxy, .token = token };
+    const client = try support.Client.connectWith(host.io(), host.local_address.getPort(), options);
+    defer client.destroy();
+
+    const connect = host_event: while (true) {
+        const event = host.nextEvent() orelse {
+            host.waitEvents(10);
+            continue;
+        };
+        defer host.releaseEvents();
+        break :host_event event.connect;
+    };
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(&der, &digest, .{});
+    try testing.expectEqualSlices(u8, &digest, connect.identity.?);
+    try testing.expect(connect.issuer_verified);
+
+    // A login Microsoft did not sign reaches PHP, which accepts it itself.
+    try support.login(host, client, connect.session, .zlib);
+    try testing.expectEqual(@as(u64, 1), host.statistics().login_fallbacks);
+    try testing.expectEqual(@as(u64, 0), host.statistics().authentication_failures);
+}

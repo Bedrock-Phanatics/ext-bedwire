@@ -71,6 +71,33 @@ const Lan = struct {
     }
 };
 
+/// Decides which client identities signaling accepts: those Minecraft's keys signed, and self-signed ones
+/// whose key is configured as trusted, such as a proxy's.
+const Trust = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    authority: ?*Authority,
+    keys: []const []const u8,
+
+    /// Without authentication every client is accepted, and the identity digest still lets PHP recognise proxies.
+    fn verifier(self: *Trust) ?nethernet.sdp_identity.Verifier {
+        if (self.authority == null) return null;
+        return .{ .context = self, .verify = verify };
+    }
+
+    fn verify(context: ?*anyopaque, token: []const u8) anyerror!?nethernet.sdp_identity.Key {
+        const self: *Trust = @ptrCast(@alignCast(context.?));
+        // Listed keys are checked first, since it is cheap and never waits on fetching Minecraft's keys.
+        if (self.keys.len != 0) {
+            const key = try nethernet.identity.claimPublicKey(self.allocator, token, std.Io.Clock.real.now(self.io).toSeconds(), .client);
+            const der = bedwire.crypto.spki.encode(key);
+            for (self.keys) |trusted| if (std.mem.eql(u8, trusted, &der)) return key;
+        }
+        const authority = self.authority.?;
+        return authority.verifier().verify(authority, token);
+    }
+};
+
 pub const Worker = struct {
     /// Event space held back so every live session's disconnect is always delivered.
     pub const obligation_bytes = 32;
@@ -84,8 +111,10 @@ pub const Worker = struct {
     config: *const Config,
     listener: *nethernet.EndpointListener,
     lan: ?Lan,
+    trust: *Trust,
     authority: ?*Authority,
     keys: Keys = .{},
+    ice_servers: [][*:0]const u8,
     pool: bedwire.BufferPool,
     limits: bedwire.Limits,
     slots: []Slot,
@@ -137,12 +166,19 @@ pub const Worker = struct {
             allocator.destroy(value);
         };
 
+        const trust = try allocator.create(Trust);
+        errdefer allocator.destroy(trust);
+        trust.* = .{ .allocator = allocator, .io = io, .authority = authority, .keys = config.trusted_identity_keys };
+        const ice_servers = try allocator.alloc([*:0]const u8, config.ice_servers.len);
+        errdefer allocator.free(ice_servers);
+        for (ice_servers, config.ice_servers) |*pointer, server| pointer.* = server.ptr;
+
         // One identity for HTTP and LAN signaling, so a player confirms the server once.
         const identity_key = if (config.identity_file) |path| try nethernet.identity_file.loadOrCreate(io, allocator, path) else nethernet.IdentityKeyPair.generate(io);
         const connection: nethernet.ConnectionOptions = .{
             .server_identity_key = identity_key,
             .allow_anonymous = authority == null,
-            .verify_client = if (authority) |value| value.verifier() else null,
+            .verify_client = trust.verifier(),
             .maximum_message_size = host_mod.max_frame_bytes,
             .native = .{
                 .queue_bytes = config.receive_queue_bytes,
@@ -150,6 +186,8 @@ pub const Worker = struct {
                 .port_range_begin = config.port_range_begin,
                 .port_range_end = config.port_range_end,
                 .enable_ice_udp_mux = config.udp_mux,
+                .ice_servers = ice_servers,
+                .bind_address = config.bind_address,
             },
         };
         const listener = try nethernet.EndpointListener.listen(allocator, io, config.address, .{
@@ -171,6 +209,8 @@ pub const Worker = struct {
             .config = config,
             .listener = listener,
             .lan = lan,
+            .trust = trust,
+            .ice_servers = ice_servers,
             .authority = authority,
             .pool = pool,
             .limits = limits,
@@ -192,6 +232,8 @@ pub const Worker = struct {
         }
         self.listener.destroy();
         if (self.lan) |*lan| lan.close();
+        self.allocator.destroy(self.trust);
+        self.allocator.free(self.ice_servers);
         self.keys.deinit(self.allocator);
         if (self.authority) |authority| {
             authority.deinit();
@@ -382,13 +424,13 @@ pub const Worker = struct {
         var unused: [256]u8 = undefined;
         const address = if (connection.selectedIceAddresses(&unused, &address_buffer) catch null) |pair| pair.remote else "";
         var digest: [32]u8 = undefined;
-        const identity: []const u8 = if (connection.public_key != null and connection.identity_issuer_verified) blk: {
-            std.crypto.hash.sha2.Sha256.hash(&connection.public_key.?.toUncompressedSec1(), &digest, .{});
+        const identity: []const u8 = if (connection.public_key) |key| blk: {
+            std.crypto.hash.sha2.Sha256.hash(&bedwire.crypto.spki.encode(key), &digest, .{});
             break :blk &digest;
         } else &.{};
         const network_id = connection.remote_id[0..@min(connection.remote_id.len, 256)];
 
-        const len = 11 + address.len + identity.len + network_id.len;
+        const len = 12 + address.len + identity.len + network_id.len;
         const refused = self.shutdown_deadline != null or self.free_len == 0;
         const bytes = if (refused) null else self.shared.events.reserve(@backingInt(Event.connect), len, self.reserveObligations(1));
         const record = bytes orelse {
@@ -426,9 +468,10 @@ pub const Worker = struct {
         std.mem.writeInt(u64, record[0..8], self.sessionId(slot), .little);
         std.mem.writeInt(u16, record[8..10], @intCast(address.len), .little);
         record[10] = @intCast(identity.len);
-        @memcpy(record[11..][0..address.len], address);
-        @memcpy(record[11 + address.len ..][0..identity.len], identity);
-        @memcpy(record[11 + address.len + identity.len ..], network_id);
+        record[11] = @intFromBool(connection.identity_issuer_verified);
+        @memcpy(record[12..][0..address.len], address);
+        @memcpy(record[12 + address.len ..][0..identity.len], identity);
+        @memcpy(record[12 + address.len + identity.len ..], network_id);
         self.commitEvent();
         self.shared.live[index].store(slot.generation, .release);
     }
@@ -521,7 +564,7 @@ pub const Worker = struct {
             };
             if (slot.phase != .open) continue;
             if (message.reliability != .reliable) {
-                self.stats.unreliable_dropped += 1;
+                self.deliverUnreliable(slot, message.data);
                 continue;
             }
             self.ingest(slot, message.data) catch |err| self.fail(slot, switch (err) {
@@ -531,6 +574,21 @@ pub const Worker = struct {
             });
         }
         return .busy;
+    }
+
+    /// Unreliable messages carry no ordering, so they bypass the session and reach PHP as they arrived.
+    fn deliverUnreliable(self: *Worker, slot: *Slot, payload: []const u8) void {
+        if (!self.config.unreliable_events or payload.len == 0 or !self.takeToken(slot)) {
+            self.stats.unreliable_dropped += 1;
+            return;
+        }
+        const bytes = self.emit(.unreliable, 8 + payload.len) orelse {
+            self.stats.unreliable_dropped += 1;
+            return;
+        };
+        std.mem.writeInt(u64, bytes[0..8], self.sessionId(slot), .little);
+        @memcpy(bytes[8..], payload);
+        self.commitEvent();
     }
 
     fn ingest(self: *Worker, slot: *Slot, payload: []const u8) !void {
@@ -560,13 +618,16 @@ pub const Worker = struct {
         if (next) |state| try slot.session.advance(state);
     }
 
-    /// Verifies the login token natively, so PHP only ever sees identities Microsoft signed.
+    /// Verifies Microsoft-signed logins here and reports them before the Login packet. Others, such as offline
+    /// or proxy logins, are left to PHP, and the session cannot pass the login stage until it calls acceptLogin.
     fn authenticate(self: *Worker, slot: *Slot, packet: bedwire.Packet) !void {
-        const keys = try self.currentKeys();
-        const now = std.Io.Clock.real.now(self.io).toSeconds();
-        var identity = slot.session.authenticateLoginPacket(self.allocator, packet, .{ .oidc = .{ .now = now, .keys = keys } }) catch return error.Unauthenticated;
+        var identity = self.verifyLogin(slot, packet) catch {
+            self.stats.login_fallbacks += 1;
+            return;
+        };
         defer identity.deinit();
-        if (identity.uuid.len != 36) return error.Unauthenticated;
+        try slot.session.installVerifiedClientKey(identity.public_key);
+        self.stats.native_logins += 1;
 
         const name = identity.display_name[0..@min(identity.display_name.len, std.math.maxInt(u16))];
         const bytes = self.emit(.login, 46 + name.len + identity.xuid.len) orelse return error.EventQueueFull;
@@ -577,6 +638,22 @@ pub const Worker = struct {
         @memcpy(bytes[46 + name.len ..], identity.xuid);
         self.commitEvent();
         slot.logged_in = true;
+    }
+
+    fn verifyLogin(self: *Worker, slot: *Slot, packet: bedwire.Packet) !bedwire.Identity {
+        const keys = try self.currentKeys();
+        const decoded = try slot.session.decodePacket(packet);
+        if (decoded.value != .typed or decoded.value.typed != .login) return error.InvalidProfile;
+        const request = try bedwire.auth.decodeConnectionRequest(decoded.value.typed.login.connection_request, self.limits);
+        var envelope = try bedwire.auth.parseChainEnvelope(self.allocator, request.chain_data, self.limits);
+        defer envelope.deinit();
+        if (envelope.authentication_type != 0) return error.Unauthenticated;
+        const token = envelope.token orelse return error.Unauthenticated;
+        const now = std.Io.Clock.real.now(self.io).toSeconds();
+        var identity = try bedwire.auth.verifyOidc(self.allocator, token, request.client_data, .{ .now = now, .keys = keys }, self.limits);
+        errdefer identity.deinit();
+        if (identity.uuid.len != 36) return error.Unauthenticated;
+        return identity;
     }
 
     /// Parses the authority's key snapshot again only when its contents changed.
@@ -661,6 +738,9 @@ pub const Worker = struct {
                 const key = bedwire.crypto.spki.decode(bytes[8..]) catch return self.fail(slot, .authentication);
                 slot.session.installVerifiedClientKey(key) catch return self.fail(slot, .protocol);
                 slot.logged_in = true;
+            },
+            .send_unreliable => slot.connection.send(bytes[8..], .unreliable) catch {
+                self.stats.unreliable_dropped += 1;
             },
         }
     }

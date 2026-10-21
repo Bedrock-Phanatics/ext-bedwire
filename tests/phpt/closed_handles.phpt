@@ -18,6 +18,8 @@ foreach ([0, 1, 1 << 16, (5 << 16) | 3, -1, PHP_INT_MAX, PHP_INT_MIN] as $id) {
     $results[] = $server->sendPackets($id, [["text", Bedwire\Protocol::decode($text)]]);
     $results[] = $server->disconnect($id);
     $results[] = $server->acceptLogin($id, "der");
+    $results[] = $server->sendRawBatch($id, "	");
+    $results[] = $server->sendUnreliable($id, "");
 }
 var_dump(count($results), array_unique($results, SORT_REGULAR));
 var_dump($server->poll(16, 20));
@@ -25,7 +27,7 @@ var_dump($server->getStatistics()["sessions"]);
 $server->stop(0);
 ?>
 --EXPECT--
-int(35)
+int(49)
 array(1) {
   [0]=>
   bool(false)

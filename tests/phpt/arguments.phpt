@@ -36,6 +36,13 @@ attempt(fn() => $server->send(1, str_repeat("a", 5 * 1024 * 1024)));
 attempt(fn() => $server->sendPackets(1, [["text"]]));
 attempt(fn() => $server->sendPackets(1, [["no_such_packet", []]]));
 attempt(fn() => $server->sendPackets(1, [["text", ["localize" => "yes"]]]));
+attempt(fn() => $server->sendRawBatch(1, "	"));
+attempt(fn() => $server->sendRawBatch(1, ""));
+attempt(fn() => $server->sendUnreliable(1, str_repeat("a", 70000)));
+attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["ice_servers" => "stun:x"]));
+attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["ice_servers" => [""]]));
+attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["bind_address" => "not an ip"]));
+attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["trusted_identity_keys" => array_fill(0, 65, "k")]));
 attempt(fn() => $server->setStatus(str_repeat("a", 300), "level", 10));
 attempt(fn() => $server->setStatus("name", "level", -1));
 attempt(fn() => $server->setStatus("name", "level", 10, 3));
@@ -64,6 +71,13 @@ ValueError: Bedwire\Server::send(): Argument #2 ($packet) exceeds the maximum ba
 TypeError: Bedwire\Server::sendPackets(): Argument #2 ($packets) must contain [packet, fields] pairs
 ValueError: Bedwire\Server::sendPackets(): Argument #2 ($packets) must use known packet names
 ValueError: Bedwire\Server::sendPackets(): Argument #2 ($packets) localize must be of type bool, string given
+ValueError: Bedwire\Server::sendRawBatch(): Argument #2 ($batch) is not a batch of varint length-prefixed packets
+ValueError: Bedwire\Server::sendRawBatch(): Argument #2 ($batch) must not be empty
+ValueError: Bedwire\Server::sendUnreliable(): Argument #2 ($payload) exceeds the maximum batch size
+TypeError: Bedwire\Server::__construct(): Argument #3 ($options) option "ice_servers" must be a list of strings
+ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "ice_servers" has an empty or invalid entry
+ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "bind_address" must be an IP address
+ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "trusted_identity_keys" has too many entries
 ValueError: Bedwire\Server::setStatus(): Argument #1 ($name) must be valid UTF-8 of at most 256 bytes
 ValueError: Bedwire\Server::setStatus(): Argument #3 ($maxPlayers) must not be negative
 ValueError: Bedwire\Server::setStatus(): Argument #4 ($gameType) must be between 0 and 2

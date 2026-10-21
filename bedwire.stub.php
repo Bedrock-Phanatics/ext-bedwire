@@ -24,6 +24,7 @@ namespace Bedwire {
         public const int EVENT_DISCONNECT = 2;
         public const int EVENT_PACKET = 3;
         public const int EVENT_LOGIN = 4;
+        public const int EVENT_UNRELIABLE = 5;
 
         public const int REASON_REMOTE = 0;
         public const int REASON_SERVER = 1;
@@ -50,6 +51,10 @@ namespace Bedwire {
         public function sendBatch(int $session, array $packets): bool {}
 
         public function sendPackets(int $session, array $packets): bool {}
+
+        public function sendRawBatch(int $session, string $batch): bool {}
+
+        public function sendUnreliable(int $session, string $payload): bool {}
 
         public function disconnect(int $session): bool {}
 

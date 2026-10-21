@@ -74,9 +74,9 @@ Bedwire\Protocol, Bedwire\Nbt run on the calling PHP thread with no network invo
 - Vanilla NetherNet framing is used: no `0xfe` batch header, and no Bedrock encryption on top of DTLS.
 
 **Authentication**
-- With `authentication` on (the default), nethernet verifies each client's identity token at signaling.
-- The worker then verifies the Login packet's token against Microsoft's signing keys, and reports a verified `EVENT_LOGIN` before the Login packet itself.
-- With it off, PHP verifies the login and calls `acceptLogin()`.
+- With `authentication` on (the default), nethernet verifies each client's identity token at signaling against Microsoft's keys. Self-signed identities whose key is listed in `trusted_identity_keys` (your proxies) are accepted too.
+- The worker then verifies Microsoft-signed Login tokens natively and reports a verified `EVENT_LOGIN` before the Login packet itself.
+- Any other login (offline, proxy-signed, or one the native check rejects) still reaches PHP. PHP verifies it and calls `acceptLogin()`, and the session cannot leave the login stage before one of the two happens.
 
 ## Usage
 
@@ -95,10 +95,11 @@ while ($running) {
     for ($i = 0, $n = count($events); $i < $n; $i += 3) {
         [$kind, $session, $data] = [$events[$i], $events[$i + 1], $events[$i + 2]];
         match ($kind) {
-            Server::EVENT_CONNECT => onConnect($session, ...$data),     // [ip:port, network ID, identity digest or null]
+            Server::EVENT_CONNECT => onConnect($session, ...$data),     // [ip:port, network ID, SHA-256 of the DER identity key or null, Microsoft-verified]
             Server::EVENT_LOGIN => onLogin($session, ...$data),         // [display name, UUID, XUID], already verified
             Server::EVENT_PACKET => onPacket($session, $data),          // one encoded game packet
             Server::EVENT_DISCONNECT => onDisconnect($session, $data),  // Server::REASON_*
+            Server::EVENT_UNRELIABLE => onUnreliable($session, $data),  // a raw unreliable message, with "unreliable_events"
         };
     }
 }
@@ -118,6 +119,10 @@ $server->sendPackets($session, [
 ]);
 // Or send packets that are already encoded, as one batch.
 $server->sendBatch($session, [$encodedA, $encodedB]);
+// Or a batch body as Bedrock frames it (varint length + packet, repeated), compressed on the network thread.
+$server->sendRawBatch($session, $batchBody);
+// Unreliable channel: one message, sent as it is.
+$server->sendUnreliable($session, $payload);
 
 $server->stop(2000);
 ```
@@ -147,6 +152,10 @@ $server->stop(2000);
 | `send_buffer_bytes` | 16 MiB | Per-connection unsent data before the peer is disconnected |
 | `port_range_begin`, `port_range_end` | any | UDP ports for WebRTC |
 | `udp_mux` | false | Share one UDP socket across connections. Not verified against vanilla clients |
+| `ice_servers` | none | STUN/TURN servers, e.g. `stun:stun.l.google.com:19302`, for servers behind NAT |
+| `bind_address` | any | Local address WebRTC binds its UDP sockets to |
+| `trusted_identity_keys` | none | DER public keys whose self-signed identities pass authenticated signaling (proxies) |
+| `unreliable_events` | false | Deliver unreliable-channel messages as `EVENT_UNRELIABLE` instead of dropping them |
 | `stats_interval_ms` | 1000 | Timer for statistics, login timeouts and the LAN advertisement |
 
 `getStatistics()` returns sessions, traffic, packets, rejections, disconnects by cause, refused connections, receive pauses, event stalls and queue usage.

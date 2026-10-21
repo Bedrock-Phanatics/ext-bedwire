@@ -5,14 +5,17 @@ const nethernet = @import("nethernet");
 const Ring = @import("ring.zig").Ring;
 const Worker = @import("worker.zig").Worker;
 
-pub const Event = enum(u32) { connect = 1, disconnect, packet, login };
-pub const Command = enum(u32) { send = 1, disconnect, accept_login };
+pub const Event = enum(u32) { connect = 1, disconnect, packet, login, unreliable };
+pub const Command = enum(u32) { send = 1, disconnect, accept_login, send_unreliable };
 pub const Reason = enum(u8) { remote, server, protocol, overload, shutdown, authentication, timeout };
 
 pub const max_sessions_limit = 1 << 16;
 pub const max_frame_bytes = 4 * 1024 * 1024;
 pub const max_packets_per_batch = 1024;
 pub const max_status_text = 256;
+pub const max_unreliable_bytes = 64 * 1024;
+pub const max_trusted_keys = 64;
+pub const max_ice_servers = 32;
 
 pub const Config = struct {
     address: std.Io.net.IpAddress,
@@ -40,6 +43,14 @@ pub const Config = struct {
     udp_mux: bool = false,
     /// UDP port for LAN discovery, 7551 for vanilla clients, 0 disables it.
     lan_port: u16 = 0,
+    /// STUN and TURN servers, such as "stun:stun.l.google.com:19302", for servers behind NAT.
+    ice_servers: []const [:0]const u8 = &.{},
+    /// Local address WebRTC binds its UDP sockets to.
+    bind_address: ?[:0]const u8 = null,
+    /// DER public keys, such as those of trusted proxies, whose self-signed identities are accepted at signaling.
+    trusted_identity_keys: []const []const u8 = &.{},
+    /// Deliver messages from the unreliable channel as events instead of dropping them.
+    unreliable_events: bool = false,
 
     pub fn validate(self: Config) !void {
         if (self.max_sessions == 0 or self.max_sessions >= max_sessions_limit) return error.InvalidConfig;
@@ -51,6 +62,10 @@ pub const Config = struct {
         if (self.receive_queue_bytes < 64 * 1024 or self.receive_queue_bytes > 64 * 1024 * 1024) return error.InvalidConfig;
         if (self.send_buffer_bytes < 256 * 1024 or self.send_buffer_bytes > 256 * 1024 * 1024) return error.InvalidConfig;
         if ((self.port_range_begin == 0) != (self.port_range_end == 0) or self.port_range_begin > self.port_range_end) return error.InvalidConfig;
+        if (self.ice_servers.len > max_ice_servers or self.trusted_identity_keys.len > max_trusted_keys) return error.InvalidConfig;
+        for (self.ice_servers) |server| if (server.len == 0 or server.len > 512) return error.InvalidConfig;
+        for (self.trusted_identity_keys) |key| if (key.len == 0 or key.len > 512) return error.InvalidConfig;
+        if (self.bind_address) |address| if (address.len == 0 or address.len > 64) return error.InvalidConfig;
         const reserve = @as(usize, self.max_sessions) * Worker.obligation_bytes;
         if (reserve > self.event_queue_bytes / 4) return error.InvalidConfig;
     }
@@ -64,6 +79,8 @@ pub const Statistics = struct {
     batches_sent: u64 = 0,
     packets_rejected: u64 = 0,
     unreliable_dropped: u64 = 0,
+    native_logins: u64 = 0,
+    login_fallbacks: u64 = 0,
     overload_disconnects: u64 = 0,
     protocol_disconnects: u64 = 0,
     authentication_failures: u64 = 0,
@@ -146,10 +163,12 @@ pub fn sessionParts(id: u64) ?struct { index: u32, generation: u32 } {
 }
 
 pub const Delivered = union(Event) {
-    connect: struct { session: u64, address: []const u8, network_id: []const u8, identity: ?[]const u8 },
+    /// `identity` is the SHA-256 of the client's DER identity key, `issuer_verified` whether Minecraft's keys signed it.
+    connect: struct { session: u64, address: []const u8, network_id: []const u8, identity: ?[]const u8, issuer_verified: bool },
     disconnect: struct { session: u64, reason: Reason },
     packet: struct { session: u64, bytes: []const u8 },
     login: struct { session: u64, name: []const u8, uuid: []const u8, xuid: []const u8 },
+    unreliable: struct { session: u64, bytes: []const u8 },
 };
 
 pub const SendError = error{ Closed, Backpressure, TooLarge, TooManyPackets, EmptyBatch };
@@ -187,6 +206,8 @@ pub const Host = struct {
     thread: ?std.Thread = null,
     local_address: std.Io.net.IpAddress,
     stopped: bool = false,
+    /// Owns the copies of the configured strings, which every new connection reads.
+    strings: std.heap.ArenaAllocator,
 
     pub fn start(allocator: std.mem.Allocator, config: Config) !*Host {
         try config.validate();
@@ -200,8 +221,11 @@ pub const Host = struct {
             .config = config,
             .worker = undefined,
             .local_address = undefined,
+            .strings = .init(allocator),
         };
         errdefer shared_io.release();
+        errdefer self.strings.deinit();
+        try self.ownStrings();
 
         var commands = try Ring.init(allocator, config.command_queue_bytes);
         errdefer commands.deinit(allocator);
@@ -224,6 +248,17 @@ pub const Host = struct {
 
         self.thread = try std.Thread.spawn(.{ .stack_size = 16 * 1024 * 1024 }, Worker.run, .{self.worker});
         return self;
+    }
+
+    fn ownStrings(self: *Host) !void {
+        const arena = self.strings.allocator();
+        const servers = try arena.alloc([:0]const u8, self.config.ice_servers.len);
+        for (servers, self.config.ice_servers) |*copy, server| copy.* = try arena.dupeSentinel(u8, server, 0);
+        self.config.ice_servers = servers;
+        const keys = try arena.alloc([]const u8, self.config.trusted_identity_keys.len);
+        for (keys, self.config.trusted_identity_keys) |*copy, key| copy.* = try arena.dupe(u8, key);
+        self.config.trusted_identity_keys = keys;
+        if (self.config.bind_address) |address| self.config.bind_address = try arena.dupeSentinel(u8, address, 0);
     }
 
     pub fn io(self: *Host) std.Io {
@@ -251,6 +286,7 @@ pub const Host = struct {
         self.shared.commands.deinit(allocator);
         self.shared.events.deinit(allocator);
         allocator.free(self.shared.live);
+        self.strings.deinit();
         shared_io.release();
         allocator.destroy(self);
     }
@@ -321,6 +357,52 @@ pub const Host = struct {
         self.commitSend(batch);
     }
 
+    /// Takes a batch body as Bedrock frames it, each packet behind its varint length, so callers that batch
+    /// themselves hand it over without splitting. Compression happens on the network thread.
+    pub fn sendRawBatch(self: *Host, session: u64, body: []const u8) (SendError || error{MalformedBatch})!void {
+        var count: usize = 0;
+        var bytes: usize = 0;
+        var reader = RawBatch{ .body = body };
+        while (try reader.next()) |packet| {
+            count += 1;
+            bytes += packet.len;
+        }
+        var batch = try self.beginSend(session, count, bytes);
+        reader = .{ .body = body };
+        while (reader.next() catch unreachable) |packet| @memcpy(batch.packet(packet.len), packet);
+        self.commitSend(batch);
+    }
+
+    const RawBatch = struct {
+        body: []const u8,
+        offset: usize = 0,
+
+        fn next(self: *RawBatch) error{MalformedBatch}!?[]const u8 {
+            if (self.offset == self.body.len) return null;
+            var len: u64 = 0;
+            var shift: u6 = 0;
+            while (true) {
+                if (self.offset == self.body.len or shift > 28) return error.MalformedBatch;
+                const byte = self.body[self.offset];
+                self.offset += 1;
+                len |= @as(u64, byte & 0x7f) << shift;
+                if (byte & 0x80 == 0) break;
+                shift += 7;
+            }
+            if (len == 0 or len > self.body.len - self.offset) return error.MalformedBatch;
+            const packet = self.body[self.offset..][0..@intCast(len)];
+            self.offset += @intCast(len);
+            return packet;
+        }
+    };
+
+    /// Sends one message on the unreliable channel as it is: no batching, compression or ordering.
+    pub fn sendUnreliable(self: *Host, session: u64, payload: []const u8) SendError!void {
+        if (payload.len == 0) return error.EmptyBatch;
+        if (payload.len > max_unreliable_bytes) return error.TooLarge;
+        return self.sessionCommand(.send_unreliable, session, payload);
+    }
+
     pub fn disconnect(self: *Host, session: u64) SendError!void {
         return self.sessionCommand(.disconnect, session, &.{});
     }
@@ -337,17 +419,19 @@ pub const Host = struct {
         const session = std.mem.readInt(u64, bytes[0..8], .little);
         return switch (@as(Event, @fromBackingInt(@intCast(record.tag)))) {
             .packet => .{ .packet = .{ .session = session, .bytes = bytes[8..] } },
+            .unreliable => .{ .unreliable = .{ .session = session, .bytes = bytes[8..] } },
             .disconnect => .{ .disconnect = .{ .session = session, .reason = @fromBackingInt(bytes[8]) } },
             .connect => blk: {
                 const address_len = std.mem.readInt(u16, bytes[8..10], .little);
                 const identity_len = bytes[10];
-                const address = bytes[11..][0..address_len];
-                const identity = bytes[11 + address_len ..][0..identity_len];
+                const address = bytes[12..][0..address_len];
+                const identity = bytes[12 + address_len ..][0..identity_len];
                 break :blk .{ .connect = .{
                     .session = session,
                     .address = address,
                     .identity = if (identity_len == 0) null else identity,
-                    .network_id = bytes[11 + address_len + identity_len ..],
+                    .issuer_verified = bytes[11] != 0,
+                    .network_id = bytes[12 + address_len + identity_len ..],
                 } };
             },
             .login => blk: {

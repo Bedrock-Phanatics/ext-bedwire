@@ -45,7 +45,8 @@ const Server = struct {
             .address = std.Io.net.IpAddress.parse(address, port_value) catch return errors.argumentValueError(1, "must be an IP address", .{}),
         };
         var path: [4096:0]u8 = undefined;
-        if (options) |table| try parseOptions(table, &config, &path);
+        var lists: Lists = .{};
+        if (options) |table| try parseOptions(table, &config, &path, &lists);
 
         const host = native.Host.start(gpa, config) catch |err| return switch (err) {
             error.InvalidConfig => errors.argumentValueError(3, "contains an out-of-range value", .{}),
@@ -125,6 +126,20 @@ const Server = struct {
         return true;
     }
 
+    /// Sends a batch body as Bedrock frames it, each packet behind its varint length, compressing it on the network thread.
+    pub fn sendRawBatch(self: *Server, session: i64, batch: []const u8) !bool {
+        (try self.get()).sendRawBatch(@bitCast(session), batch) catch |err| return switch (err) {
+            error.MalformedBatch => errors.argumentValueError(2, "is not a batch of varint length-prefixed packets", .{}),
+            else => |send_error| queued(send_error),
+        };
+        return true;
+    }
+
+    /// Sends one message on the unreliable channel as it is, without batching, compression or ordering.
+    pub fn sendUnreliable(self: *Server, session: i64, payload: []const u8) !bool {
+        return queued((try self.get()).sendUnreliable(@bitCast(session), payload));
+    }
+
     pub fn disconnect(self: *Server, session: i64) !bool {
         return queued((try self.get()).disconnect(@bitCast(session)));
     }
@@ -174,9 +189,32 @@ fn deref(zv: *c.zval) *c.zval {
 
 const int_options = .{ "max_sessions", "packet_rate", "login_timeout_ms", "stats_interval_ms", "max_negotiations", "http_workers", "command_queue_bytes", "event_queue_bytes", "max_batch_bytes", "receive_queue_bytes", "send_buffer_bytes" };
 const port_options = .{ "port_range_begin", "port_range_end", "lan_port" };
-const bool_options = .{ "authentication", "udp_mux" };
+const bool_options = .{ "authentication", "udp_mux", "unreliable_events" };
 
-fn parseOptions(table: *Array, config: *native.Config, path: *[4096:0]u8) !void {
+/// Option lists borrow PHP's strings, which outlive the constructor call that copies them.
+const Lists = struct {
+    ice_servers: [native.max_ice_servers][:0]const u8 = undefined,
+    trusted_identity_keys: [native.max_trusted_keys][]const u8 = undefined,
+};
+
+fn stringList(value: *c.zval, comptime name: []const u8, out: anytype) ![]@TypeOf(out[0]) {
+    if (!Zval.raw.is(value, .array)) return errors.argumentTypeError(3, "option \"" ++ name ++ "\" must be a list of strings", .{});
+    var count: usize = 0;
+    var items = Zval.raw.asUnchecked(value, .array).fastValueIterator();
+    while (items.next()) |raw| {
+        const item = deref(raw);
+        if (!Zval.raw.is(item, .string)) return errors.argumentTypeError(3, "option \"" ++ name ++ "\" must be a list of strings", .{});
+        if (count == out.len) return errors.argumentValueError(3, "option \"" ++ name ++ "\" has too many entries", .{});
+        const text = Zval.raw.asUnchecked(item, .string);
+        if (text.len == 0 or std.mem.indexOfScalar(u8, text, 0) != null) return errors.argumentValueError(3, "option \"" ++ name ++ "\" has an empty or invalid entry", .{});
+        // Zend strings are NUL-terminated, so the bytes can be borrowed as C strings.
+        out[count] = if (@TypeOf(out[0]) == [:0]const u8) text.ptr[0..text.len :0] else text;
+        count += 1;
+    }
+    return out[0..count];
+}
+
+fn parseOptions(table: *Array, config: *native.Config, path: *[4096:0]u8, lists: *Lists) !void {
     var entries = table.iterator();
     while (entries.next()) |entry| {
         const key = switch (entry.key) {
@@ -192,6 +230,21 @@ fn parseOptions(table: *Array, config: *native.Config, path: *[4096:0]u8) !void 
             @memcpy(path[0..text.len], text);
             path[text.len] = 0;
             config.identity_file = path[0..text.len];
+            continue;
+        }
+        if (std.mem.eql(u8, key, "bind_address")) {
+            if (!Zval.raw.is(value, .string)) return errors.argumentTypeError(3, "option \"bind_address\" must be string", .{});
+            const text = Zval.raw.asUnchecked(value, .string);
+            _ = std.Io.net.IpAddress.parse(text, 0) catch return errors.argumentValueError(3, "option \"bind_address\" must be an IP address", .{});
+            config.bind_address = text.ptr[0..text.len :0];
+            continue;
+        }
+        if (std.mem.eql(u8, key, "ice_servers")) {
+            config.ice_servers = try stringList(value, "ice_servers", &lists.ice_servers);
+            continue;
+        }
+        if (std.mem.eql(u8, key, "trusted_identity_keys")) {
+            config.trusted_identity_keys = try stringList(value, "trusted_identity_keys", &lists.trusted_identity_keys);
             continue;
         }
         inline for (bool_options) |name| {
@@ -233,11 +286,16 @@ fn appendEvent(list: *Array.ListBuilder, event: native.Delivered) void {
         },
         .connect => |connect| {
             list.append(.int, @bitCast(connect.session));
-            var details = Array.ListBuilder.init(3);
+            var details = Array.ListBuilder.init(4);
             details.appendAssumeCapacity(.string, connect.address);
             details.appendAssumeCapacity(.string, connect.network_id);
             if (connect.identity) |identity| details.appendAssumeCapacity(.string, identity) else details.appendValue(&Zval.raw.nil);
+            details.appendAssumeCapacity(.bool, connect.issuer_verified);
             list.append(.array, details.finish());
+        },
+        .unreliable => |unreliable| {
+            list.append(.int, @bitCast(unreliable.session));
+            list.append(.string, unreliable.bytes);
         },
         .disconnect => |disconnect| {
             list.append(.int, @bitCast(disconnect.session));

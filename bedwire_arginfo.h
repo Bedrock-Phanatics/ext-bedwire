@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: 1ea1f2d677053c853b3f4e5e8d77d2b03fbaae4f */
+ * Stub hash: 19bbdddcb4bd7f45e462919f14712c1887aecef4 */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Bedwire_Server___construct, 0, 0, 2)
 	ZEND_ARG_TYPE_INFO(0, address, IS_STRING, 0)
@@ -40,6 +40,16 @@ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Server_sendBatch, 
 ZEND_END_ARG_INFO()
 
 #define arginfo_class_Bedwire_Server_sendPackets arginfo_class_Bedwire_Server_sendBatch
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Server_sendRawBatch, 0, 2, _IS_BOOL, 0)
+	ZEND_ARG_TYPE_INFO(0, session, IS_LONG, 0)
+	ZEND_ARG_TYPE_INFO(0, batch, IS_STRING, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Server_sendUnreliable, 0, 2, _IS_BOOL, 0)
+	ZEND_ARG_TYPE_INFO(0, session, IS_LONG, 0)
+	ZEND_ARG_TYPE_INFO(0, payload, IS_STRING, 0)
+ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Server_disconnect, 0, 1, _IS_BOOL, 0)
 	ZEND_ARG_TYPE_INFO(0, session, IS_LONG, 0)
@@ -161,6 +171,8 @@ ZEND_METHOD(Bedwire_Server, poll);
 ZEND_METHOD(Bedwire_Server, send);
 ZEND_METHOD(Bedwire_Server, sendBatch);
 ZEND_METHOD(Bedwire_Server, sendPackets);
+ZEND_METHOD(Bedwire_Server, sendRawBatch);
+ZEND_METHOD(Bedwire_Server, sendUnreliable);
 ZEND_METHOD(Bedwire_Server, disconnect);
 ZEND_METHOD(Bedwire_Server, acceptLogin);
 ZEND_METHOD(Bedwire_Server, getStatistics);
@@ -195,6 +207,8 @@ static const zend_function_entry class_Bedwire_Server_methods[] = {
 	ZEND_ME(Bedwire_Server, send, arginfo_class_Bedwire_Server_send, ZEND_ACC_PUBLIC)
 	ZEND_ME(Bedwire_Server, sendBatch, arginfo_class_Bedwire_Server_sendBatch, ZEND_ACC_PUBLIC)
 	ZEND_ME(Bedwire_Server, sendPackets, arginfo_class_Bedwire_Server_sendPackets, ZEND_ACC_PUBLIC)
+	ZEND_ME(Bedwire_Server, sendRawBatch, arginfo_class_Bedwire_Server_sendRawBatch, ZEND_ACC_PUBLIC)
+	ZEND_ME(Bedwire_Server, sendUnreliable, arginfo_class_Bedwire_Server_sendUnreliable, ZEND_ACC_PUBLIC)
 	ZEND_ME(Bedwire_Server, disconnect, arginfo_class_Bedwire_Server_disconnect, ZEND_ACC_PUBLIC)
 	ZEND_ME(Bedwire_Server, acceptLogin, arginfo_class_Bedwire_Server_acceptLogin, ZEND_ACC_PUBLIC)
 	ZEND_ME(Bedwire_Server, getStatistics, arginfo_class_Bedwire_Server_getStatistics, ZEND_ACC_PUBLIC)
@@ -299,6 +313,12 @@ static zend_class_entry *register_class_Bedwire_Server(void)
 	zend_string *const_EVENT_LOGIN_name = zend_string_init_interned("EVENT_LOGIN", sizeof("EVENT_LOGIN") - 1, 1);
 	zend_declare_typed_class_constant(class_entry, const_EVENT_LOGIN_name, &const_EVENT_LOGIN_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
 	zend_string_release(const_EVENT_LOGIN_name);
+
+	zval const_EVENT_UNRELIABLE_value;
+	ZVAL_LONG(&const_EVENT_UNRELIABLE_value, 5);
+	zend_string *const_EVENT_UNRELIABLE_name = zend_string_init_interned("EVENT_UNRELIABLE", sizeof("EVENT_UNRELIABLE") - 1, 1);
+	zend_declare_typed_class_constant(class_entry, const_EVENT_UNRELIABLE_name, &const_EVENT_UNRELIABLE_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
+	zend_string_release(const_EVENT_UNRELIABLE_name);
 
 	zval const_REASON_REMOTE_value;
 	ZVAL_LONG(&const_REASON_REMOTE_value, 0);

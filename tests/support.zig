@@ -43,9 +43,14 @@ pub const Owned = union(native.Event) {
     disconnect: struct { session: u64, reason: native.Reason },
     packet: struct { session: u64, bytes: []u8 },
     login: u64,
+    unreliable: struct { session: u64, bytes: []u8 },
 
     pub fn deinit(self: Owned) void {
-        if (self == .packet) testing.allocator.free(self.packet.bytes);
+        switch (self) {
+            .packet => |packet| testing.allocator.free(packet.bytes),
+            .unreliable => |unreliable| testing.allocator.free(unreliable.bytes),
+            else => {},
+        }
     }
 };
 
@@ -58,6 +63,7 @@ pub fn nextEvent(host: *native.Host, timeout_ms: u32) !Owned {
                 .disconnect => |d| .{ .disconnect = .{ .session = d.session, .reason = d.reason } },
                 .packet => |p| .{ .packet = .{ .session = p.session, .bytes = try testing.allocator.dupe(u8, p.bytes) } },
                 .login => |l| .{ .login = l.session },
+                .unreliable => |u| .{ .unreliable = .{ .session = u.session, .bytes = try testing.allocator.dupe(u8, u.bytes) } },
             };
             host.releaseEvents();
             return owned;
@@ -100,9 +106,14 @@ pub const Client = struct {
     session: bedwire.Session,
     key: Ecdsa.KeyPair,
     received: std.ArrayList([]u8) = .empty,
+    unreliable: std.ArrayList([]u8) = .empty,
     closed: bool = false,
 
     pub fn connect(io: std.Io, port: u16) !*Client {
+        return connectWith(io, port, options);
+    }
+
+    pub fn connectWith(io: std.Io, port: u16, connection_options: nethernet.ConnectionOptions) !*Client {
         var origin: [64]u8 = undefined;
         var random: [8]u8 = undefined;
         io.random(&random);
@@ -111,7 +122,7 @@ pub const Client = struct {
             io,
             try std.fmt.bufPrint(&origin, "http://127.0.0.1:{d}", .{port}),
             std.mem.readInt(u64, &random, .little) | 1,
-            options,
+            connection_options,
         );
         return adopt(io, connection);
     }
@@ -144,6 +155,8 @@ pub const Client = struct {
     pub fn destroy(self: *Client) void {
         for (self.received.items) |packet| testing.allocator.free(packet);
         self.received.deinit(testing.allocator);
+        for (self.unreliable.items) |message| testing.allocator.free(message);
+        self.unreliable.deinit(testing.allocator);
         self.session.deinit();
         self.connection.destroy();
         self.pool.deinit();
@@ -167,7 +180,13 @@ pub const Client = struct {
                 self.closed = true;
                 return;
             } orelse break;
-            if (event == .message) self.deliver(event.message.data) catch {
+            if (event != .message) continue;
+            if (event.message.reliability == .unreliable) {
+                const copy = testing.allocator.dupe(u8, event.message.data) catch return;
+                self.unreliable.append(testing.allocator, copy) catch testing.allocator.free(copy);
+                continue;
+            }
+            self.deliver(event.message.data) catch {
                 self.closed = true;
                 return;
             };
