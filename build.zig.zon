@@ -9,15 +9,17 @@
             .hash = "phpz-0.1.0-D3BhOMKSFADSaCwelZeFzt2YrcxZ4LonpEekE7OdUHAT",
         },
         .bedwire = .{
-            .path = "../bedwire",
+            .url = "git+https://github.com/Bedrock-Phanatics/bedwire#d844df93d78e8680603cb1e674b2ce7f30280413",
+            .hash = "bedwire-0.4.0-6vrYrUu_EgCahRkGTA9qDCuhCB1DSQYWYrJ-DtOfM28E",
         },
         .nethernet = .{
-            .path = "../nethernet-zig",
+            .url = "git+https://github.com/Bedrock-Phanatics/nethernet-zig#bfce4450e1dc3436547bc1df1a0279af1a042a12",
+            .hash = "nethernet-1.4.0-dprTqIqWCgDR6LuQmX9A_iq2Cvd73biwAZNinuBbcZyz",
         },
         .nbt = .{
             .url = "git+https://github.com/Bedrock-Phanatics/nbt-zig#26d021f59412b9ab366c09471c443a5b69d53570",
             .hash = "nbt-1.3.0-iJUBvsFZBQCnPhYiwhOUQ59w0_TgfGfQbAdd1-uL71YO",
         },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "bedwire.stub.php", "bedwire_arginfo.h", "bedwire.h", "src", "tests", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "bedwire.stub.php", "bedwire_arginfo.h", "bedwire.h", "src", "tests", "tools", "docs", "stubs", "README.md" },
 }
