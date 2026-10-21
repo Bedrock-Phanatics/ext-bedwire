@@ -17,11 +17,13 @@ pub const max_trusted_keys = host.max_trusted_keys;
 pub const stat_names = host.stat_names;
 pub const protocol = @import("bedwire").protocol;
 pub const Ring = @import("ring.zig").Ring;
+pub const signal = @import("signal.zig");
 pub const nbt = @import("nbt.zig");
 
 test {
     std.testing.refAllDecls(@This());
     _ = @import("ring.zig");
+    _ = @import("signal.zig");
     _ = @import("nbt.zig");
     _ = @import("worker.zig");
 }

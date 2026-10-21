@@ -140,6 +140,19 @@ const Server = struct {
         return queued((try self.get()).sendUnreliable(@bitCast(session), payload));
     }
 
+    /// A handle another thread can pass to waitForEvents, to wake an event loop as soon as events arrive.
+    pub fn eventSignal(self: *Server) !i64 {
+        return @bitCast((try self.get()).shared.signal_handle);
+    }
+
+    /// Blocks the calling thread, which needs no Server of its own, until events are published after the
+    /// sequence `seen` or the timeout passes. Returns the new sequence, or null once the server is gone.
+    pub fn waitForEvents(handle: i64, seen: i64, timeout_ms: ?i64) !?i64 {
+        const timeout = std.math.cast(u32, timeout_ms orelse 1000) orelse return errors.argumentValueError(3, "must be between 0 and 4294967295", .{});
+        const sequence = native.signal.wait(@bitCast(handle), @truncate(@as(u64, @bitCast(seen))), timeout) orelse return null;
+        return sequence;
+    }
+
     pub fn disconnect(self: *Server, session: i64) !bool {
         return queued((try self.get()).disconnect(@bitCast(session)));
     }

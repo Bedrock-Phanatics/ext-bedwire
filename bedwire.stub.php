@@ -56,6 +56,10 @@ namespace Bedwire {
 
         public function sendUnreliable(int $session, string $payload): bool {}
 
+        public function eventSignal(): int {}
+
+        public static function waitForEvents(int $signal, int $seen, int $timeoutMs = 1000): ?int {}
+
         public function disconnect(int $session): bool {}
 
         public function acceptLogin(int $session, string $clientKeyDer): bool {}

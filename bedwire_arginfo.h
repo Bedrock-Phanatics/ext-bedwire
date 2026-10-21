@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: 19bbdddcb4bd7f45e462919f14712c1887aecef4 */
+ * Stub hash: e117ddb7ecf89c4b0b3fe340787ef280f6d82baa */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Bedwire_Server___construct, 0, 0, 2)
 	ZEND_ARG_TYPE_INFO(0, address, IS_STRING, 0)
@@ -49,6 +49,14 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Server_sendUnreliable, 0, 2, _IS_BOOL, 0)
 	ZEND_ARG_TYPE_INFO(0, session, IS_LONG, 0)
 	ZEND_ARG_TYPE_INFO(0, payload, IS_STRING, 0)
+ZEND_END_ARG_INFO()
+
+#define arginfo_class_Bedwire_Server_eventSignal arginfo_class_Bedwire_Server_getPort
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Server_waitForEvents, 0, 2, IS_LONG, 1)
+	ZEND_ARG_TYPE_INFO(0, signal, IS_LONG, 0)
+	ZEND_ARG_TYPE_INFO(0, seen, IS_LONG, 0)
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, timeoutMs, IS_LONG, 0, "1000")
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Server_disconnect, 0, 1, _IS_BOOL, 0)
@@ -173,6 +181,8 @@ ZEND_METHOD(Bedwire_Server, sendBatch);
 ZEND_METHOD(Bedwire_Server, sendPackets);
 ZEND_METHOD(Bedwire_Server, sendRawBatch);
 ZEND_METHOD(Bedwire_Server, sendUnreliable);
+ZEND_METHOD(Bedwire_Server, eventSignal);
+ZEND_METHOD(Bedwire_Server, waitForEvents);
 ZEND_METHOD(Bedwire_Server, disconnect);
 ZEND_METHOD(Bedwire_Server, acceptLogin);
 ZEND_METHOD(Bedwire_Server, getStatistics);
@@ -209,6 +219,8 @@ static const zend_function_entry class_Bedwire_Server_methods[] = {
 	ZEND_ME(Bedwire_Server, sendPackets, arginfo_class_Bedwire_Server_sendPackets, ZEND_ACC_PUBLIC)
 	ZEND_ME(Bedwire_Server, sendRawBatch, arginfo_class_Bedwire_Server_sendRawBatch, ZEND_ACC_PUBLIC)
 	ZEND_ME(Bedwire_Server, sendUnreliable, arginfo_class_Bedwire_Server_sendUnreliable, ZEND_ACC_PUBLIC)
+	ZEND_ME(Bedwire_Server, eventSignal, arginfo_class_Bedwire_Server_eventSignal, ZEND_ACC_PUBLIC)
+	ZEND_ME(Bedwire_Server, waitForEvents, arginfo_class_Bedwire_Server_waitForEvents, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
 	ZEND_ME(Bedwire_Server, disconnect, arginfo_class_Bedwire_Server_disconnect, ZEND_ACC_PUBLIC)
 	ZEND_ME(Bedwire_Server, acceptLogin, arginfo_class_Bedwire_Server_acceptLogin, ZEND_ACC_PUBLIC)
 	ZEND_ME(Bedwire_Server, getStatistics, arginfo_class_Bedwire_Server_getStatistics, ZEND_ACC_PUBLIC)

@@ -3,6 +3,7 @@ const std = @import("std");
 const nethernet = @import("nethernet");
 
 const Ring = @import("ring.zig").Ring;
+const signal_mod = @import("signal.zig");
 const Worker = @import("worker.zig").Worker;
 
 pub const Event = enum(u32) { connect = 1, disconnect, packet, login, unreliable };
@@ -125,6 +126,9 @@ pub const Shared = struct {
     stats: [stat_names.len]std.atomic.Value(u64),
     /// The worker waits here, and PHP and every connection signal it.
     wakeup: nethernet.Wakeup = .{},
+    /// Bumped whenever events are published, for threads that wait on the server from outside.
+    signal: *signal_mod.Signal,
+    signal_handle: u64,
     status: Status = .{},
 
     wants_events_space: std.atomic.Value(bool) = .init(false),
@@ -146,6 +150,7 @@ pub const Shared = struct {
     }
 
     pub fn notifyConsumer(self: *Shared, io: std.Io) void {
+        self.signal.notify();
         if (!self.consumer_waiting.load(.seq_cst)) return;
         _ = self.event_seq.fetchAdd(1, .seq_cst);
         io.futexWake(u32, &self.event_seq.raw, 1);
@@ -235,7 +240,9 @@ pub const Host = struct {
         errdefer allocator.free(live);
         @memset(live, .init(0));
 
-        self.shared = .{ .commands = commands, .events = events, .live = live, .stats = undefined };
+        const signal = signal_mod.create() orelse return error.TooManyServers;
+        errdefer signal_mod.close(signal.signal);
+        self.shared = .{ .commands = commands, .events = events, .live = live, .stats = undefined, .signal = signal.signal, .signal_handle = signal.handle };
         @memset(&self.shared.stats, .init(0));
         self.shared.status.io = self.io_handle;
         self.shared.status.max_players = config.max_sessions;
@@ -286,6 +293,7 @@ pub const Host = struct {
         self.shared.commands.deinit(allocator);
         self.shared.events.deinit(allocator);
         allocator.free(self.shared.live);
+        signal_mod.close(self.shared.signal);
         self.strings.deinit();
         shared_io.release();
         allocator.destroy(self);
