@@ -1,0 +1,19 @@
+name: NetherNet native dependencies
+description: Builds nethernet-zig's patched libdatachannel into $NETHERNET_NATIVE_PREFIX, cached per pinned nethernet-zig.
+runs:
+  using: composite
+  steps:
+    - name: Fetch packages
+      shell: bash
+      run: |
+        zig build --fetch
+        echo "NETHERNET_PACKAGE=$(ls -d zig-pkg/nethernet-* | head -1)" >> "$GITHUB_ENV"
+    - id: cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.NETHERNET_NATIVE_PREFIX }}
+        key: libdatachannel-${{ runner.os }}-${{ hashFiles('build.zig.zon') }}
+    - name: Build libdatachannel
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: sh "$NETHERNET_PACKAGE/tools/setup-native.sh"

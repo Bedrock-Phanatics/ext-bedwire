@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+env:
+  NETHERNET_NATIVE_PREFIX: ${{ github.workspace }}/.native
+
 jobs:
   zig:
     runs-on: ubuntu-24.04
@@ -16,7 +19,8 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
-      - run: zig fmt --check build.zig build.zig.zon src tests
+      - uses: ./.github/actions/native
+      - run: zig fmt --check build.zig build.zig.zon src tests tools
       - run: zig build test -Doptimize=${{ matrix.optimize }} --summary all
 
   php:
@@ -31,6 +35,7 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
+      - uses: ./.github/actions/native
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
@@ -49,12 +54,14 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
-      - name: Pinned revisions only and a single protocol-zig
+      - name: Pinned revisions only, one protocol-zig and one nbt-zig
         run: |
           ! grep -E '\?ref=(main|master|dev)"' build.zig.zon
+          ! grep -E '\.path = ' build.zig.zon
           grep -E '#[0-9a-f]{40}"' build.zig.zon | wc -l | grep -qx 4
-          zig build -l > /dev/null
+          zig build --fetch
           test "$(ls zig-pkg | grep -c '^bedrock_protocol-')" -eq 1
+          test "$(ls zig-pkg | grep -c '^nbt-')" -eq 1
 
   stress:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -64,5 +71,6 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
+      - uses: ./.github/actions/native
       - run: zig build test -Doptimize=ReleaseSafe -Dstress-rounds=20
       - run: zig build bench
