@@ -91,6 +91,5 @@ To refuse a player, send a `disconnect` packet and call `Server::disconnect()`. 
 
 ## Not covered yet
 
-- The `NetworkInterface` adapter itself lives in Quark and has to be written there. This repository only provides the extension and its API.
-- Unreliable NetherNet messages are dropped. Quark's `sendUnreliablePacket` has no counterpart yet.
-- Vanilla client interoperability of the native login verification still needs a live test.
+- Quark's `bedwire` transport (`src/network/mcpe/bedwire`) is the adapter. `zig build join` installs `bedwire-join`, an offline client that spawns in it end to end.
+- Vanilla client interoperability, including native verification of Xbox logins, still needs a live test.
