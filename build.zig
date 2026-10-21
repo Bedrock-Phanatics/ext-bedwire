@@ -17,6 +17,7 @@ pub fn build(b: *std.Build) void {
     const php_include_dir = b.option([]const u8, "php-include-dir", "PHP include directory (main/, Zend/, TSRM/, ext/)") orelse "/usr/include/php";
     const php_lib_dir = b.option([]const u8, "php-lib-dir", "Windows only: PHP SDK library directory containing php8*.lib");
     const windows_zts = b.option(bool, "windows-zts", "Windows only: link against the thread-safe PHP library") orelse false;
+    const windows_debug = b.option(bool, "windows-debug", "Windows only: build against a debug PHP SDK") orelse false;
     const libc_file = b.option([]const u8, "libc-file", "Libc paths file for C translation and extension compilation");
     const php = b.option([]const u8, "php", "PHP binary used for PHPT tests and benchmarks") orelse "php";
     const stress_rounds = b.option(usize, "stress-rounds", "Rounds for the start/stop and churn stress tests") orelse 3;
@@ -24,7 +25,7 @@ pub fn build(b: *std.Build) void {
         b.graph.environ_map.get("NETHERNET_NATIVE_PREFIX") orelse ".deps/native";
 
     const libdeflate = b.option(bool, "libdeflate", "Compress session batches with libdeflate rather than std's deflate") orelse true;
-    const imports = nativeImports(b, target, optimize, native_prefix, libdeflate);
+    const imports = nativeImports(b, target, optimize, native_prefix, libdeflate, libc_file);
     const native = b.createModule(.{
         .root_source_file = b.path("src/native.zig"),
         .target = target,
@@ -43,6 +44,7 @@ pub fn build(b: *std.Build) void {
         .php_include_dir = .{ .cwd_relative = php_include_dir },
         .php_lib_dir = if (php_lib_dir) |dir| .{ .cwd_relative = dir } else null,
         .windows_zts = windows_zts,
+        .windows_debug = windows_debug,
     });
 
     const extension = phpz.addExtension(b, .{
@@ -96,7 +98,7 @@ pub fn build(b: *std.Build) void {
     addLibraryPath(b, phpt, target, library_path);
     b.step("phpt", "Run PHPT tests against the built extension").dependOn(&phpt.step);
 
-    const bench_imports = nativeImports(b, target, .ReleaseFast, native_prefix, libdeflate);
+    const bench_imports = nativeImports(b, target, .ReleaseFast, native_prefix, libdeflate, libc_file);
     const bench_native = b.createModule(.{
         .root_source_file = b.path("src/native.zig"),
         .target = target,
@@ -145,10 +147,10 @@ pub fn build(b: *std.Build) void {
     b.step("docs", "Regenerate the packet reference and IDE stubs from protocol-zig").dependOn(&run_docs.step);
 }
 
-fn nativeImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, native_prefix: []const u8, libdeflate: bool) [3]std.Build.Module.Import {
+fn nativeImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, native_prefix: []const u8, libdeflate: bool, libc_file: ?[]const u8) [3]std.Build.Module.Import {
     const args = .{ .target = target, .optimize = optimize };
     return .{
-        .{ .name = "bedwire", .module = b.dependency("bedwire", .{ .target = target, .optimize = optimize, .libdeflate = libdeflate }).module("bedwire") },
+        .{ .name = "bedwire", .module = b.dependency("bedwire", .{ .target = target, .optimize = optimize, .libdeflate = libdeflate, .@"libc-file" = libc_file }).module("bedwire") },
         .{ .name = "nethernet", .module = b.dependency("nethernet", .{ .target = target, .optimize = optimize, .@"native-prefix" = native_prefix }).module("nethernet") },
         .{ .name = "nbt", .module = b.dependency("nbt", args).module("nbt") },
     };

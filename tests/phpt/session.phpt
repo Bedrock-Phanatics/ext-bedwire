@@ -4,7 +4,7 @@ Real NetherNet clients log in, exchange packets and disconnect through Bedwire\S
 bedwire
 --SKIPIF--
 <?php
-if (!is_executable(__DIR__ . '/../../zig-out/bin/bedwire-bench-client')) die("skip load client not built");
+if (!is_executable(__DIR__ . '/../../zig-out/bin/bedwire-bench-client' . (PHP_OS_FAMILY === 'Windows' ? '.exe' : ''))) die("skip load client not built");
 ?>
 --FILE--
 <?php
@@ -12,7 +12,7 @@ use Bedwire\{PacketId, Protocol, Server};
 
 $server = new Server("127.0.0.1", 0, ["authentication" => false, "max_sessions" => 8]);
 $server->setStatus("phpt", "world", 8);
-$client = proc_open([__DIR__ . '/../../zig-out/bin/bedwire-bench-client', (string) $server->getPort(), "3", "50", "1", "64"], [1 => ["pipe", "w"]], $pipes);
+$client = proc_open([__DIR__ . '/../../zig-out/bin/bedwire-bench-client' . (PHP_OS_FAMILY === 'Windows' ? '.exe' : ''), (string) $server->getPort(), "3", "50", "1", "64"], [1 => ["pipe", "w"]], $pipes);
 
 // Any valid P-384 key works here, since NetherNet sessions are not encrypted by Bedrock.
 $der = base64_decode("MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEuyHwtjuGx8e2cPN6hfK87jCHrFlgU89VI5JZUTZJ9VafKjU1pVRe1nXHgvs6En0bB0uILy89E4KfWZRGPrvh06zfueS24YCWPaVk58qDzGXn6/hZTarLNEvuxI1ZatZY");
