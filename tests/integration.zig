@@ -304,3 +304,41 @@ test "queued single sends to one session coalesce without reordering" {
     for (received, 0..) |packet, i| try testing.expectEqual(@as(u8, @intCast(i)), packet[packet.len - 1]);
     try testing.expect(host.statistics().batches_sent < 100 + 10);
 }
+
+test "LAN discovery advertises the status and accepts a LAN join" {
+    var random: [2]u8 = undefined;
+    std.testing.io.random(&random);
+    const lan_port = 40000 + std.mem.readInt(u16, &random, .little) % 20000;
+    const host = try start(.{ .lan_port = lan_port });
+    defer host.destroy();
+    host.setStatus("LAN test", "lan world", 10, 0);
+
+    const io = host.io();
+    const discovery = try nethernet.Discovery.listen(gpa, io, .{ .ip4 = .loopback(0) }, .{ .broadcast_endpoint = .{ .ip4 = .loopback(lan_port) } });
+    defer discovery.destroy();
+    const deadline = support.Deadline.in(io, 10_000);
+    const server_id, const data = found: while (!deadline.expired()) {
+        try discovery.request(.{ .ip4 = .loopback(lan_port) });
+        _ = try discovery.poll(50);
+        var servers = discovery.servers.iterator();
+        while (servers.next()) |entry| {
+            const response = entry.value_ptr.response orelse continue;
+            // The advertisement follows setStatus on the worker's next tick.
+            const decoded = try nethernet.ServerData.decode(response);
+            if (std.mem.eql(u8, decoded.server_name, "LAN test")) break :found .{ entry.key_ptr.*, decoded };
+        }
+    } else return error.Timeout;
+    try testing.expectEqualStrings("LAN test", data.server_name);
+    try testing.expectEqualStrings("lan world", data.level_name);
+    try testing.expectEqual(@as(i32, 10), data.max_player_count);
+    try testing.expectEqual(@as(i32, @intCast(bedwire.protocol.protocol_version)), data.protocol);
+
+    const client = try support.Client.adopt(io, try nethernet.dialLan(gpa, discovery, server_id, support.Client.options));
+    defer client.destroy();
+    const session = try support.expectConnect(host);
+    try support.login(host, client, session, .zlib);
+    var a: [64]u8 = undefined;
+    const text = packets.raw(&a, packets.id(.text), "over lan");
+    try host.send(session, &.{text});
+    try testing.expectEqualSlices(u8, text, (try client.expectPackets(1, 5000))[0]);
+}

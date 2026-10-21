@@ -43,6 +43,34 @@ const Keys = struct {
     }
 };
 
+/// LAN discovery and signaling, which vanilla clients use to find servers on the local network.
+const Lan = struct {
+    discovery: *nethernet.Discovery,
+    listener: *nethernet.LanListener,
+    version: u32 = 0,
+    players: u32 = std.math.maxInt(u32),
+
+    fn open(allocator: std.mem.Allocator, io: std.Io, config: *const Config, connection: nethernet.ConnectionOptions, wakeup: *nethernet.Wakeup) !Lan {
+        const address: std.Io.net.IpAddress = switch (config.address) {
+            .ip4 => .{ .ip4 = .unspecified(config.lan_port) },
+            .ip6 => .{ .ip6 = .unspecified(config.lan_port) },
+        };
+        const discovery = try nethernet.Discovery.listen(allocator, io, address, .{});
+        errdefer discovery.destroy();
+        const listener = try nethernet.LanListener.listen(allocator, discovery, .{
+            .connection = connection,
+            .maximum_negotiations = config.max_negotiations,
+            .wakeup = wakeup,
+        });
+        return .{ .discovery = discovery, .listener = listener };
+    }
+
+    fn close(self: *Lan) void {
+        self.listener.destroy();
+        self.discovery.destroy();
+    }
+};
+
 pub const Worker = struct {
     /// Event space held back so every live session's disconnect is always delivered.
     pub const obligation_bytes = 32;
@@ -55,6 +83,7 @@ pub const Worker = struct {
     shared: *Shared,
     config: *const Config,
     listener: *nethernet.EndpointListener,
+    lan: ?Lan,
     authority: ?*Authority,
     keys: Keys = .{},
     pool: bedwire.BufferPool,
@@ -108,21 +137,23 @@ pub const Worker = struct {
             allocator.destroy(value);
         };
 
-        const identity_key = if (config.identity_file) |path| try nethernet.identity_file.loadOrCreate(io, allocator, path) else null;
-        const listener = try nethernet.EndpointListener.listen(allocator, io, config.address, .{
-            .connection = .{
-                .server_identity_key = identity_key,
-                .allow_anonymous = authority == null,
-                .verify_client = if (authority) |value| value.verifier() else null,
-                .maximum_message_size = host_mod.max_frame_bytes,
-                .native = .{
-                    .queue_bytes = config.receive_queue_bytes,
-                    .maximum_buffered_send = config.send_buffer_bytes,
-                    .port_range_begin = config.port_range_begin,
-                    .port_range_end = config.port_range_end,
-                    .enable_ice_udp_mux = config.udp_mux,
-                },
+        // One identity for HTTP and LAN signaling, so a player confirms the server once.
+        const identity_key = if (config.identity_file) |path| try nethernet.identity_file.loadOrCreate(io, allocator, path) else nethernet.IdentityKeyPair.generate(io);
+        const connection: nethernet.ConnectionOptions = .{
+            .server_identity_key = identity_key,
+            .allow_anonymous = authority == null,
+            .verify_client = if (authority) |value| value.verifier() else null,
+            .maximum_message_size = host_mod.max_frame_bytes,
+            .native = .{
+                .queue_bytes = config.receive_queue_bytes,
+                .maximum_buffered_send = config.send_buffer_bytes,
+                .port_range_begin = config.port_range_begin,
+                .port_range_end = config.port_range_end,
+                .enable_ice_udp_mux = config.udp_mux,
             },
+        };
+        const listener = try nethernet.EndpointListener.listen(allocator, io, config.address, .{
+            .connection = connection,
             .maximum_negotiations = config.max_negotiations,
             .maximum_http_workers = config.http_workers,
             .maximum_pending_accepts = config.max_negotiations,
@@ -130,6 +161,8 @@ pub const Worker = struct {
             .wakeup = &shared.wakeup,
         });
         errdefer listener.destroy();
+        var lan: ?Lan = if (config.lan_port != 0) try Lan.open(allocator, io, config, connection, &shared.wakeup) else null;
+        errdefer if (lan) |*value| value.close();
 
         self.* = .{
             .allocator = allocator,
@@ -137,6 +170,7 @@ pub const Worker = struct {
             .shared = shared,
             .config = config,
             .listener = listener,
+            .lan = lan,
             .authority = authority,
             .pool = pool,
             .limits = limits,
@@ -146,6 +180,7 @@ pub const Worker = struct {
             .active = active,
         };
         self.next_tick_ms = self.clock() + config.stats_interval_ms;
+        self.advertise();
         return self;
     }
 
@@ -156,6 +191,7 @@ pub const Worker = struct {
             slot.connection.destroy();
         }
         self.listener.destroy();
+        if (self.lan) |*lan| lan.close();
         self.keys.deinit(self.allocator);
         if (self.authority) |authority| {
             authority.deinit();
@@ -200,13 +236,21 @@ pub const Worker = struct {
         if (self.draining != 0) until = @min(until, now + drain_poll_ms);
         if (self.shutdown_deadline) |end| until = @min(until, end);
         var earliest = std.Io.Clock.awake.now(self.io).addDuration(.fromMilliseconds(@intCast(until -| now)));
-        for (self.active[0..self.active_len]) |index| switch (self.slots[index].connection.waitDeadline()) {
+        for (self.active[0..self.active_len]) |index| earlier(&earliest, self.slots[index].connection.waitDeadline());
+        if (self.lan) |lan| {
+            earlier(&earliest, lan.discovery.tickDeadline());
+            for (lan.listener.pending) |pending| if (pending) |connection| earlier(&earliest, connection.waitDeadline());
+        }
+        return .{ .deadline = .{ .raw = earliest, .clock = .awake } };
+    }
+
+    fn earlier(earliest: *std.Io.Timestamp, timeout: std.Io.Timeout) void {
+        switch (timeout) {
             .deadline => |at| if (at.raw.nanoseconds < earliest.nanoseconds) {
-                earliest = at.raw;
+                earliest.* = at.raw;
             },
             else => {},
-        };
-        return .{ .deadline = .{ .raw = earliest, .clock = .awake } };
+        }
     }
 
     fn finish(self: *Worker) void {
@@ -306,10 +350,31 @@ pub const Worker = struct {
     }
 
     fn acceptConnections(self: *Worker) void {
-        while (true) {
-            const connection = (self.listener.pollAccept() catch return) orelse return;
-            self.open(connection);
-        }
+        while (self.listener.pollAccept() catch null) |connection| self.open(connection);
+        if (self.lan) |lan| while (lan.listener.pollAccept() catch null) |connection| self.open(connection);
+    }
+
+    /// Keeps the LAN advertisement in step with the status PHP sets and the live player count.
+    fn advertise(self: *Worker) void {
+        const lan = &(self.lan orelse return);
+        const current = &self.shared.status;
+        current.mutex.lockUncancelable(self.io);
+        defer current.mutex.unlock(self.io);
+        const players: u32 = @intCast(@min(self.active_len, current.max_players));
+        if (lan.version == current.version and lan.players == players) return;
+        lan.discovery.setServerData(.{
+            .server_name = current.name.slice(),
+            .protocol = @intCast(Profile.protocol_number),
+            .version = Profile.minecraft_version,
+            .level_name = current.level.slice(),
+            .game_type = current.game_type,
+            .player_count = @intCast(players),
+            .max_player_count = @intCast(@min(current.max_players, std.math.maxInt(i32))),
+            .accepts_online_auth = self.authority != null,
+            .accepts_self_signed_auth = self.authority == null,
+        }) catch return;
+        lan.version = current.version;
+        lan.players = players;
     }
 
     fn open(self: *Worker, connection: *nethernet.Connection) void {
@@ -561,6 +626,7 @@ pub const Worker = struct {
             }
         }
         self.sumTraffic();
+        self.advertise();
         self.drainClosing(now);
     }
 

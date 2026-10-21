@@ -173,7 +173,7 @@ fn deref(zv: *c.zval) *c.zval {
 }
 
 const int_options = .{ "max_sessions", "packet_rate", "login_timeout_ms", "stats_interval_ms", "max_negotiations", "http_workers", "command_queue_bytes", "event_queue_bytes", "max_batch_bytes", "receive_queue_bytes", "send_buffer_bytes" };
-const port_options = .{ "port_range_begin", "port_range_end" };
+const port_options = .{ "port_range_begin", "port_range_end", "lan_port" };
 const bool_options = .{ "authentication", "udp_mux" };
 
 fn parseOptions(table: *Array, config: *native.Config, path: *[4096:0]u8) !void {

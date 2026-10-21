@@ -38,6 +38,8 @@ pub const Config = struct {
     port_range_begin: u16 = 0,
     port_range_end: u16 = 0,
     udp_mux: bool = false,
+    /// UDP port for LAN discovery, 7551 for vanilla clients, 0 disables it.
+    lan_port: u16 = 0,
 
     pub fn validate(self: Config) !void {
         if (self.max_sessions == 0 or self.max_sessions >= max_sessions_limit) return error.InvalidConfig;
@@ -80,6 +82,8 @@ pub const Status = struct {
     name: Text = .{},
     level: Text = .{},
     max_players: u32 = 0,
+    /// Bumped on every change so the worker refreshes the LAN advertisement only when needed.
+    version: u32 = 0,
     game_type: i32 = 0,
 
     pub const Text = struct {
@@ -262,6 +266,7 @@ pub const Host = struct {
         status.name.set(name);
         status.level.set(level);
         status.max_players = max_players;
+        status.version +%= 1;
         status.game_type = game_type;
     }
 

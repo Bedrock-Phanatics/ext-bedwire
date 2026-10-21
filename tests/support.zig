@@ -103,8 +103,6 @@ pub const Client = struct {
     closed: bool = false,
 
     pub fn connect(io: std.Io, port: u16) !*Client {
-        const self = try testing.allocator.create(Client);
-        errdefer testing.allocator.destroy(self);
         var origin: [64]u8 = undefined;
         var random: [8]u8 = undefined;
         io.random(&random);
@@ -113,9 +111,18 @@ pub const Client = struct {
             io,
             try std.fmt.bufPrint(&origin, "http://127.0.0.1:{d}", .{port}),
             std.mem.readInt(u64, &random, .little) | 1,
-            .{ .allow_anonymous = true, .maximum_message_size = 4 * 1024 * 1024 },
+            options,
         );
+        return adopt(io, connection);
+    }
+
+    pub const options: nethernet.ConnectionOptions = .{ .allow_anonymous = true, .maximum_message_size = 4 * 1024 * 1024 };
+
+    /// Takes ownership of an established connection, also on failure.
+    pub fn adopt(io: std.Io, connection: *nethernet.Connection) !*Client {
         errdefer connection.destroy();
+        const self = try testing.allocator.create(Client);
+        errdefer testing.allocator.destroy(self);
         var pool = try bedwire.BufferPool.init(testing.allocator, .{
             .max_frame_bytes = 4 * 1024 * 1024,
             .max_batch_bytes = 1024 * 1024,
