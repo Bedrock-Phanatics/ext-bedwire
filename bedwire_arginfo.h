@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: e117ddb7ecf89c4b0b3fe340787ef280f6d82baa */
+ * Stub hash: d169e447600449f6a817c24ba6c503236e038551 */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Bedwire_Server___construct, 0, 0, 2)
 	ZEND_ARG_TYPE_INFO(0, address, IS_STRING, 0)
@@ -44,6 +44,7 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Server_sendRawBatch, 0, 2, _IS_BOOL, 0)
 	ZEND_ARG_TYPE_INFO(0, session, IS_LONG, 0)
 	ZEND_ARG_TYPE_INFO(0, batch, IS_STRING, 0)
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, offset, IS_LONG, 0, "0")
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Server_sendUnreliable, 0, 2, _IS_BOOL, 0)

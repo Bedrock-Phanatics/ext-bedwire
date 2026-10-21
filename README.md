@@ -120,7 +120,7 @@ $server->sendPackets($session, [
 // Or send packets that are already encoded, as one batch.
 $server->sendBatch($session, [$encodedA, $encodedB]);
 // Or a batch body as Bedrock frames it (varint length + packet, repeated), compressed on the network thread.
-$server->sendRawBatch($session, $batchBody);
+$server->sendRawBatch($session, $batchBody, $offset = 0);
 // Unreliable channel: one message, sent as it is.
 $server->sendUnreliable($session, $payload);
 

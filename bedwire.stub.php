@@ -52,7 +52,7 @@ namespace Bedwire {
 
         public function sendPackets(int $session, array $packets): bool {}
 
-        public function sendRawBatch(int $session, string $batch): bool {}
+        public function sendRawBatch(int $session, string $batch, int $offset = 0): bool {}
 
         public function sendUnreliable(int $session, string $payload): bool {}
 

@@ -38,6 +38,7 @@ attempt(fn() => $server->sendPackets(1, [["no_such_packet", []]]));
 attempt(fn() => $server->sendPackets(1, [["text", ["localize" => "yes"]]]));
 attempt(fn() => $server->sendRawBatch(1, "	"));
 attempt(fn() => $server->sendRawBatch(1, ""));
+attempt(fn() => $server->sendRawBatch(1, "	", 3));
 attempt(fn() => $server->sendUnreliable(1, str_repeat("a", 70000)));
 attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["ice_servers" => "stun:x"]));
 attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["ice_servers" => [""]]));
@@ -73,6 +74,7 @@ ValueError: Bedwire\Server::sendPackets(): Argument #2 ($packets) must use known
 ValueError: Bedwire\Server::sendPackets(): Argument #2 ($packets) localize must be of type bool, string given
 ValueError: Bedwire\Server::sendRawBatch(): Argument #2 ($batch) is not a batch of varint length-prefixed packets
 ValueError: Bedwire\Server::sendRawBatch(): Argument #2 ($batch) must not be empty
+ValueError: Bedwire\Server::sendRawBatch(): Argument #3 ($offset) is past the end of the batch
 ValueError: Bedwire\Server::sendUnreliable(): Argument #2 ($payload) exceeds the maximum batch size
 TypeError: Bedwire\Server::__construct(): Argument #3 ($options) option "ice_servers" must be a list of strings
 ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "ice_servers" has an empty or invalid entry

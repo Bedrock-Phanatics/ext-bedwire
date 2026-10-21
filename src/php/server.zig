@@ -127,8 +127,10 @@ const Server = struct {
     }
 
     /// Sends a batch body as Bedrock frames it, each packet behind its varint length, compressing it on the network thread.
-    pub fn sendRawBatch(self: *Server, session: i64, batch: []const u8) !bool {
-        (try self.get()).sendRawBatch(@bitCast(session), batch) catch |err| return switch (err) {
+    pub fn sendRawBatch(self: *Server, session: i64, batch: []const u8, offset: ?i64) !bool {
+        const start = std.math.cast(usize, offset orelse 0) orelse return errors.argumentValueError(3, "must not be negative", .{});
+        if (start > batch.len) return errors.argumentValueError(3, "is past the end of the batch", .{});
+        (try self.get()).sendRawBatch(@bitCast(session), batch[start..]) catch |err| return switch (err) {
             error.MalformedBatch => errors.argumentValueError(2, "is not a batch of varint length-prefixed packets", .{}),
             else => |send_error| queued(send_error),
         };
