@@ -395,7 +395,9 @@ test "the unreliable channel works both ways when enabled" {
 test "trusted proxies pass authenticated signaling and logins fall back to PHP" {
     const proxy = nethernet.IdentityKeyPair.generate(std.testing.io);
     const der = bedwire.crypto.spki.encode(proxy.public_key);
-    const host = try start(.{ .authentication = true, .trusted_identity_keys = &.{&der} });
+    // A named array, since config() would otherwise coerce the tuple into a temporary of its own frame
+    const keys = [_][]const u8{&der};
+    const host = try start(.{ .authentication = true, .trusted_identity_keys = &keys });
     defer host.destroy();
 
     const token = try nethernet.identity.serverToken(gpa, proxy, std.Io.Clock.real.now(host.io()).toSeconds());
@@ -406,21 +408,22 @@ test "trusted proxies pass authenticated signaling and logins fall back to PHP" 
     const client = try support.Client.connectWith(host.io(), host.local_address.getPort(), options);
     defer client.destroy();
 
-    const connect = host_event: while (true) {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(&der, &digest, .{});
+    const session = host_event: while (true) {
         const event = host.nextEvent() orelse {
             host.waitEvents(10);
             continue;
         };
         defer host.releaseEvents();
-        break :host_event event.connect;
+        // The identity borrows the event, so check it before releasing
+        try testing.expectEqualSlices(u8, &digest, event.connect.identity.?);
+        try testing.expect(event.connect.issuer_verified);
+        break :host_event event.connect.session;
     };
-    var digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(&der, &digest, .{});
-    try testing.expectEqualSlices(u8, &digest, connect.identity.?);
-    try testing.expect(connect.issuer_verified);
 
     // A login Microsoft did not sign reaches PHP, which accepts it itself.
-    try support.login(host, client, connect.session, .zlib);
+    try support.login(host, client, session, .zlib);
     try testing.expectEqual(@as(u64, 1), host.statistics().login_fallbacks);
     try testing.expectEqual(@as(u64, 0), host.statistics().authentication_failures);
 }
