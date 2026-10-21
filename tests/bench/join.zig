@@ -86,7 +86,7 @@ const Join = struct {
                             try self.peer.session.advance(.in_game);
                             self.spawned_ns = peer_mod.nowNs(self.peer.io);
                         },
-                        else => return fail("login refused with status {d}", .{@intFromEnum(status)}),
+                        else => return fail("login refused with status {d}", .{@backingInt(status)}),
                     }
                 },
                 .resource_packs_info => try self.peer.send(&.{peer_mod.typed(&storage, .{ .resource_pack_client_response = .{ .response = .{ .downloading_finished = "downloadingfinished" } } })}),
@@ -106,7 +106,7 @@ const Join = struct {
                         .messages => |messages| messages.message,
                         .empty => "",
                     };
-                    return fail("disconnected with reason {d}: {s}", .{ @intFromEnum(disconnect.reason), message });
+                    return fail("disconnected with reason {d}: {s}", .{ @backingInt(disconnect.reason), message });
                 },
                 else => {},
             }
