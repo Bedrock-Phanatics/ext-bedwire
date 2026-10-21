@@ -125,6 +125,14 @@ pub fn build(b: *std.Build) void {
     }) });
     const install_client = b.addInstallArtifact(client, .{});
     b.step("bench-client", "Install the out-of-process NetherNet load client").dependOn(&install_client.step);
+
+    const join = b.addExecutable(.{ .name = "bedwire-join", .root_module = b.createModule(.{
+        .root_source_file = b.path("tests/bench/join.zig"),
+        .target = target,
+        .optimize = .ReleaseSafe,
+        .imports = &bench_all,
+    }) });
+    b.step("join", "Install a client that joins a server as an offline player").dependOn(&b.addInstallArtifact(join, .{}).step);
     phpt.step.dependOn(&install_client.step);
 
     const php_bench = b.addSystemCommand(&.{ php, "-n", "-d" });
