@@ -9,8 +9,8 @@
             .hash = "phpz-0.1.0-D3BhOMKSFADSaCwelZeFzt2YrcxZ4LonpEekE7OdUHAT",
         },
         .bedwire = .{
-            .url = "git+https://github.com/Bedrock-Phanatics/bedwire#d844df93d78e8680603cb1e674b2ce7f30280413",
-            .hash = "bedwire-0.4.0-6vrYrUu_EgCahRkGTA9qDCuhCB1DSQYWYrJ-DtOfM28E",
+            .url = "https://codeload.github.com/Bedrock-Phanatics/bedwire/tar.gz/a6678d0c8cd8c56b28063129532c69fb12552c1c",
+            .hash = "bedwire-0.4.0-6vrYrd6OGgDATrxbQ4NQAJaDmAhelr4twU5WUmxYmdie",
         },
         .nethernet = .{
             .url = "git+https://github.com/Bedrock-Phanatics/nethernet-zig#bfce4450e1dc3436547bc1df1a0279af1a042a12",

@@ -58,7 +58,7 @@ jobs:
         run: |
           ! grep -E '\?ref=(main|master|dev)"' build.zig.zon
           ! grep -E '\.path = ' build.zig.zon
-          grep -E '#[0-9a-f]{40}"' build.zig.zon | wc -l | grep -qx 4
+          grep -E '[#/][0-9a-f]{40}"' build.zig.zon | wc -l | grep -qx 4
           zig build --fetch
           test "$(ls zig-pkg | grep -c '^bedrock_protocol-')" -eq 1
           test "$(ls zig-pkg | grep -c '^nbt-')" -eq 1
