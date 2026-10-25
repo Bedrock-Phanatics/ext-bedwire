@@ -83,7 +83,19 @@ pub fn kindByName(name: []const u8) ?Kind {
     return std.meta.stringToEnum(Kind, name);
 }
 
-pub const DecodeError = protocol.DecodeError;
+pub const DecodeError = protocol.DecodeError || error{TooManyValues};
+
+/// PHP values the current conversion may still create, so a small packet cannot expand into a huge array tree.
+threadlocal var remaining: usize = std.math.maxInt(usize);
+
+pub fn limitValues(max: usize) void {
+    remaining = max;
+}
+
+fn spend(count: usize) DecodeError!void {
+    if (count > remaining) return error.TooManyValues;
+    remaining -= count;
+}
 
 /// Writes `value` into the uninitialized `out`, which is left untouched on error.
 pub fn toZval(comptime T: type, value: T, out: *c.zval) DecodeError!void {
@@ -101,12 +113,14 @@ pub fn toZval(comptime T: type, value: T, out: *c.zval) DecodeError!void {
         .pointer => |info| {
             if (info.size != .slice) @compileError("unsupported pointer " ++ @typeName(T));
             if (info.child == u8) return Zval.raw.set(out, .string, value);
+            try spend(value.len);
             var list = zend.Array.ListBuilder.init(@intCast(value.len));
             for (value) |item| try appendTo(info.child, item, &list);
             Zval.raw.set(out, .array, list.finish());
         },
         .array => |info| {
             if (info.child == u8) return Zval.raw.set(out, .string, &value);
+            try spend(info.len);
             var list = zend.Array.ListBuilder.init(info.len);
             for (value) |item| try appendTo(info.child, item, &list);
             Zval.raw.set(out, .array, list.finish());
@@ -114,11 +128,13 @@ pub fn toZval(comptime T: type, value: T, out: *c.zval) DecodeError!void {
         .@"struct" => |info| {
             if (comptime isBitset(T)) return Zval.raw.set(out, .str, bitsetBytes(T, value));
             if (comptime isList(T)) {
+                try spend(value.len);
                 var list = zend.Array.ListBuilder.init(@intCast(value.len));
                 var items = value.iterator();
                 while (items.next() catch |err| return discard(&list, err)) |item| try appendTo(T.Element, item, &list);
                 return Zval.raw.set(out, .array, list.finish());
             }
+            try spend(info.field_names.len);
             const array = zend.Array.init(info.field_names.len);
             errdefer array.release();
             inline for (info.field_names, info.field_types, 0..) |name, F, i| {
@@ -131,6 +147,7 @@ pub fn toZval(comptime T: type, value: T, out: *c.zval) DecodeError!void {
         .@"union" => |info| switch (value) {
             inline else => |payload, tag| {
                 const index = comptime fieldIndex(info.field_names, @tagName(tag));
+                try spend(1);
                 const array = zend.Array.init(1);
                 errdefer array.release();
                 var field: c.zval = undefined;

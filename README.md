@@ -166,9 +166,11 @@ $server->stop(2000);
 
 - **Lookup and metadata:** `id()`, `name()`, `direction()` (`CLIENTBOUND`, `SERVERBOUND` or `BIDIRECTIONAL`), `header()` and `packetId()`.
 - **Codecs:**
-  - `decode()` returns the packet's fields, or `null` for an ID this protocol does not define.
+  - `decode($bytes, $maxValues = 0)` returns the packet's fields, or `null` for an ID this protocol does not define. A nonzero `$maxValues` caps the array entries the packet may expand into, so untrusted input cannot turn a few megabytes into a huge array tree.
   - `encode($packet, $fields, $sender = 0, $target = 0)` takes a packet ID or name, and preserves sub-client IDs.
-  - `decodeMany()` and `encodeMany()` do the same for whole lists in one call.
+  - `decodeMany()` and `encodeMany()` do the same for whole lists in one call. `encodeMany()` takes `[packet, fields]` pairs, optionally followed by the sender and target sub-client IDs.
+  - `encodeBatch()` takes the same pairs mixed with already encoded packets, and returns them as one batch body for `Server::sendRawBatch()`.
+- **Schema:** `schema()` lists every packet with its ID, direction and fields, and every struct, union and enum they reach, under stable unique names. Code generators use it to build typed wrappers from the types the extension itself walks.
 - **Constants:** `Protocol::VERSION` and `Protocol::MINECRAFT_VERSION`. `Bedwire\PacketId::<NAME>` has one constant per packet, registered at startup from protocol-zig.
 
 The field layout of every packet is listed in [docs/packets.md](docs/packets.md), generated from the same types the extension uses. For IDEs, include [stubs/bedwire_generated.php](stubs/bedwire_generated.php).

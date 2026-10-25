@@ -117,7 +117,7 @@ const Server = struct {
         var values = packets.fastValueIterator();
         for (encoded) |*item| {
             const pair = try protocol_php.pairOf(deref(values.next().?), 2);
-            item.* = try protocol_php.prepare(arena.allocator(), try protocol_php.resolveZval(pair.ref, 2), pair.fields, 0, 0, 2);
+            item.* = try protocol_php.prepare(arena.allocator(), try protocol_php.resolveZval(pair.ref, 2), pair.fields, pair.sender, pair.target, 2);
             total += item.size;
         }
         var batch = host.beginSend(@bitCast(session), encoded.len, total) catch |err| return queued(err);

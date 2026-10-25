@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: 2c85d222d46eb8b112f390e5dbaddee9ce09d723 */
+ * Stub hash: 5541322aa5ec52dd318ac9c3f3320948c507011f */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Bedwire_Server___construct, 0, 0, 2)
 	ZEND_ARG_TYPE_INFO(0, address, IS_STRING, 0)
@@ -97,10 +97,12 @@ ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Protocol_decode, 0, 1, IS_ARRAY, 1)
 	ZEND_ARG_TYPE_INFO(0, bytes, IS_STRING, 0)
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, maxValues, IS_LONG, 0, "0")
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Protocol_decodeMany, 0, 1, IS_ARRAY, 0)
 	ZEND_ARG_TYPE_INFO(0, packets, IS_ARRAY, 0)
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, maxValues, IS_LONG, 0, "0")
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Protocol_encode, 0, 2, IS_STRING, 0)
@@ -110,7 +112,15 @@ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Protocol_encode, 0
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, targetSubClient, IS_LONG, 0, "0")
 ZEND_END_ARG_INFO()
 
-#define arginfo_class_Bedwire_Protocol_encodeMany arginfo_class_Bedwire_Protocol_decodeMany
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Protocol_encodeMany, 0, 1, IS_ARRAY, 0)
+	ZEND_ARG_TYPE_INFO(0, packets, IS_ARRAY, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Protocol_encodeBatch, 0, 1, IS_STRING, 0)
+	ZEND_ARG_TYPE_INFO(0, packets, IS_ARRAY, 0)
+ZEND_END_ARG_INFO()
+
+#define arginfo_class_Bedwire_Protocol_schema arginfo_class_Bedwire_Server_getStatistics
 
 #define arginfo_class_Bedwire_Nbt___construct arginfo_class_Bedwire_Protocol___construct
 
@@ -205,6 +215,8 @@ ZEND_METHOD(Bedwire_Protocol, decode);
 ZEND_METHOD(Bedwire_Protocol, decodeMany);
 ZEND_METHOD(Bedwire_Protocol, encode);
 ZEND_METHOD(Bedwire_Protocol, encodeMany);
+ZEND_METHOD(Bedwire_Protocol, encodeBatch);
+ZEND_METHOD(Bedwire_Protocol, schema);
 ZEND_METHOD(Bedwire_Nbt, __construct);
 ZEND_METHOD(Bedwire_Nbt, transcode);
 ZEND_METHOD(Bedwire_Nbt, length);
@@ -248,6 +260,8 @@ static const zend_function_entry class_Bedwire_Protocol_methods[] = {
 	ZEND_ME(Bedwire_Protocol, decodeMany, arginfo_class_Bedwire_Protocol_decodeMany, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
 	ZEND_ME(Bedwire_Protocol, encode, arginfo_class_Bedwire_Protocol_encode, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
 	ZEND_ME(Bedwire_Protocol, encodeMany, arginfo_class_Bedwire_Protocol_encodeMany, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
+	ZEND_ME(Bedwire_Protocol, encodeBatch, arginfo_class_Bedwire_Protocol_encodeBatch, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
+	ZEND_ME(Bedwire_Protocol, schema, arginfo_class_Bedwire_Protocol_schema, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
 	ZEND_FE_END
 };
 
