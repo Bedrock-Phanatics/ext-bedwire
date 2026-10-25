@@ -146,7 +146,8 @@ const Reader = struct {
                         array.release();
                         return err;
                     };
-                    _ = array.symtableUpdate(entry.name, &child);
+                    // Zend reads the first key byte to detect numeric keys, which an empty slice may not have.
+                    _ = array.symtableUpdate(if (entry.name.len == 0) "" else entry.name, &child);
                 }
                 Zval.raw.set(&value, .array, array);
             },

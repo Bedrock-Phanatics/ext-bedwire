@@ -48,6 +48,11 @@ var_dump(Nbt::readHeadless($headless, Nbt::BEDROCK, 9)->getValue()[1]->getValue(
 [$list, $end] = Nbt::readHeadlessAt("xx" . $headless . "yy", Nbt::BEDROCK, 9, 2);
 var_dump($list->getTagType(), $end === 2 + strlen($headless));
 var_dump(Nbt::transcode(Nbt::write(new TreeRoot($root), Nbt::BEDROCK), Nbt::BEDROCK, Nbt::NETWORK) === $network);
+foreach ([Nbt::JAVA, Nbt::BEDROCK, Nbt::NETWORK] as $format) {
+    $unnamed = (new CompoundTag())->setTag("", new IntTag(9))->setTag("0", new IntTag(10));
+    $values = Nbt::read(Nbt::write(new TreeRoot($unnamed), $format), $format)->getTag()->getValue();
+    echo json_encode(array_keys($values)), " ", $values[""]->getValue(), "\n";
+}
 
 foreach ([
     fn() => Nbt::write(new TreeRoot(new ListTag([new IntTag(1)], 8)), Nbt::BEDROCK),
@@ -126,6 +131,9 @@ int(-2)
 int(3)
 bool(true)
 bool(true)
+["",0] 9
+["",0] 9
+["",0] 9
 invalid NBT: TypeMismatch
 invalid NBT: SizeLimitExceeded
 invalid NBT: UnexpectedEndOfInput
