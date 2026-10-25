@@ -193,8 +193,9 @@ Encoding validates every field and every protocol bound before writing, and writ
 - **PocketMine semantics:**
   - Strings are raw bytes up to 32767 long.
   - For duplicate names, the first value wins.
-  - `maxDepth` counts the way PocketMine does, and 0 means unlimited.
+  - `maxDepth` counts compounds and lists the way PocketMine does, except that one more empty compound is accepted at the limit. 0 means the 512-level maximum.
   - Fixed-width int arrays read back unsigned, matching PocketMine's `unpack` behaviour.
+- **Stricter than PocketMine:** negative lengths, unknown element types in empty lists and overlong varints are refused, where PocketMine reads them as empty or truncated values. Minecraft never writes them.
 - **Errors:** errors throw `Bedwire\NbtException`, and cyclic tag graphs are refused.
 
 ## Measurements
