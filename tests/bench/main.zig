@@ -168,7 +168,7 @@ fn session(io: std.Io) !void {
             fn run(c: *SessionCase) !void {
                 const out = try c.server.encode(c.batch);
                 defer out.release();
-                var packets = try c.client.ingest(out.bytes);
+                var packets = try c.client.ingestBorrowed(out.bytes);
                 defer packets.deinit();
                 while (packets.next()) |packet| std.mem.doNotOptimizeAway(packet.bytes.ptr);
             }

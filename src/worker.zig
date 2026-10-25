@@ -591,8 +591,9 @@ pub const Worker = struct {
         self.commitEvent();
     }
 
+    /// Every packet is copied into the event queue before the connection is polled again, so the message can be borrowed.
     fn ingest(self: *Worker, slot: *Slot, payload: []const u8) !void {
-        var packets = try slot.session.ingest(payload);
+        var packets = try slot.session.ingestBorrowed(payload);
         defer packets.deinit();
         const id = self.sessionId(slot);
 
