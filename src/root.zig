@@ -60,25 +60,25 @@ fn upper(comptime name: []const u8) [:0]const u8 {
 
 pub const ExceptionClass = phpz.Class("Bedwire\\Exception", struct {}, .{ .register = struct {
     fn register(register_fn: anytype) *phpz.ClassEntry {
-        return register_fn(.{phpz.globals.class.entry("RuntimeException")});
+        return register_fn(.{phpz.ClassEntry.builtin("RuntimeException")});
     }
 }.register });
 
 pub const BackpressureClass = phpz.Class("Bedwire\\BackpressureException", struct {}, .{ .register = struct {
     fn register(register_fn: anytype) *phpz.ClassEntry {
-        return register_fn(.{ExceptionClass.entry.ptr()});
+        return register_fn(.{ExceptionClass.entry});
     }
 }.register });
 
 pub const PacketExceptionClass = phpz.Class("Bedwire\\PacketException", struct {}, .{ .register = struct {
     fn register(register_fn: anytype) *phpz.ClassEntry {
-        return register_fn(.{ExceptionClass.entry.ptr()});
+        return register_fn(.{ExceptionClass.entry});
     }
 }.register });
 
 pub const NbtExceptionClass = phpz.Class("Bedwire\\NbtException", struct {}, .{ .register = struct {
     fn register(register_fn: anytype) *phpz.ClassEntry {
-        return register_fn(.{ExceptionClass.entry.ptr()});
+        return register_fn(.{ExceptionClass.entry});
     }
 }.register });
 

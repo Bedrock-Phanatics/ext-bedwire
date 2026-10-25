@@ -8,7 +8,7 @@ const scratch = @import("scratch.zig");
 const c = phpz.c;
 const zend = phpz.zend;
 const Zval = phpz.Zval;
-const errors = phpz.errors;
+const exception = phpz.exception;
 const Format = native.nbt.Format;
 const TagType = nbt.TagType;
 
@@ -77,27 +77,27 @@ fn slotOf(object: *c.zend_object, at: u32) *c.zval {
     return @ptrFromInt(@intFromPtr(object) + at);
 }
 
-fn fail(comptime format: [:0]const u8, args: anytype) errors.Exception {
-    return errors.throwExceptionEx(@import("../root.zig").NbtExceptionClass.entry, 0, format, args);
+fn fail(comptime format: [:0]const u8, args: anytype) exception.Error {
+    return exception.throwExceptionEx(@import("../root.zig").NbtExceptionClass.entry, 0, format, args);
 }
 
-fn invalid(err: anyerror) errors.Exception {
+fn invalid(err: anyerror) exception.Error {
     if (err == error.OutOfMemory) return fail("out of memory", .{});
     return fail("invalid NBT: %s", .{@errorName(err).ptr});
 }
 
 fn parseFormat(value: i64, arg: u32) !Format {
-    return std.enums.fromInt(Format, value) orelse errors.argumentValueError(arg, "must be a Bedwire\\Nbt format", .{});
+    return std.enums.fromInt(Format, value) orelse exception.argumentValueError(arg, "must be a Bedwire\\Nbt format", .{});
 }
 
 fn parseDepth(value: ?i64, arg: u32) !usize {
-    const depth = std.math.cast(u32, value orelse 0) orelse return errors.argumentValueError(arg, "must not be negative", .{});
+    const depth = std.math.cast(u32, value orelse 0) orelse return exception.argumentValueError(arg, "must not be negative", .{});
     return native.nbt.depthFromPocketMine(depth);
 }
 
 fn parseOffset(data: []const u8, value: ?i64, arg: u32) !usize {
-    const start = std.math.cast(usize, value orelse 0) orelse return errors.argumentValueError(arg, "must not be negative", .{});
-    if (start > data.len) return errors.argumentValueError(arg, "is past the end of the data", .{});
+    const start = std.math.cast(usize, value orelse 0) orelse return exception.argumentValueError(arg, "must not be negative", .{});
+    if (start > data.len) return exception.argumentValueError(arg, "is past the end of the data", .{});
     return start;
 }
 
@@ -146,8 +146,7 @@ const Reader = struct {
                         array.release();
                         return err;
                     };
-                    // Zend reads the first key byte to detect numeric keys, which an empty slice may not have.
-                    _ = array.symtableUpdate(if (entry.name.len == 0) "" else entry.name, &child);
+                    _ = array.symtableUpdate(entry.name, &child);
                 }
                 Zval.raw.set(&value, .array, array);
             },
@@ -298,7 +297,7 @@ fn render(arena: std.mem.Allocator, documents: []const nbt.Document, opts: nbt.O
 
 pub const Nbt = struct {
     pub fn __construct() !void {
-        return errors.throwError(null, "Bedwire\\Nbt cannot be instantiated", .{});
+        return exception.throwError(null, "Bedwire\\Nbt cannot be instantiated", .{});
     }
 
     pub fn transcode(data: []const u8, from: i64, to: i64, max_depth: ?i64) !*zend.String {
@@ -419,7 +418,7 @@ fn readInto(data: []const u8, format: i64, start: ?i64, max_depth: ?i64, out: *c
 
 fn readHeadlessInto(data: []const u8, format: i64, tag_type: i64, start: ?i64, max_depth: ?i64, out: *c.zval) !usize {
     const fmt = try parseFormat(format, 2);
-    const kind = TagType.fromByte(std.math.cast(u8, tag_type) orelse 0xff) catch return errors.argumentValueError(3, "must be a tag type", .{});
+    const kind = TagType.fromByte(std.math.cast(u8, tag_type) orelse 0xff) catch return exception.argumentValueError(3, "must be a tag type", .{});
     const from = try parseOffset(data, start, 4);
     const arena = scratch.begin();
     defer scratch.end(arena);

@@ -8,7 +8,7 @@ const protocol = native.protocol;
 const c = phpz.c;
 const zend = phpz.zend;
 const Zval = phpz.Zval;
-const errors = phpz.errors;
+const exception = phpz.exception;
 
 const Kind = packet.Kind;
 const PacketRef = phpz.Mixed(&.{ .int, .string });
@@ -27,11 +27,11 @@ pub fn directionOf(kind: Kind) Direction {
 
 pub const Protocol = struct {
     pub fn __construct() !void {
-        return errors.throwError(null, "Bedwire\\Protocol cannot be instantiated", .{});
+        return exception.throwError(null, "Bedwire\\Protocol cannot be instantiated", .{});
     }
 
     pub fn id(packet_name: []const u8) !i64 {
-        const kind = packet.kindByName(packet_name) orelse return errors.argumentValueError(1, "must be a known packet name", .{});
+        const kind = packet.kindByName(packet_name) orelse return exception.argumentValueError(1, "must be a known packet name", .{});
         return protocol.registry.packetId(kind).?;
     }
 
@@ -72,7 +72,7 @@ pub const Protocol = struct {
             const value = deref(raw);
             if (!Zval.raw.is(value, .string)) {
                 list.finish().release();
-                return errors.argumentTypeError(1, "must contain only strings", .{});
+                return exception.argumentTypeError(1, "must contain only strings", .{});
             }
             var out: c.zval = undefined;
             const known = decodeInto(Zval.raw.asUnchecked(value, .string), &out) catch |err| {
@@ -87,8 +87,8 @@ pub const Protocol = struct {
 
     pub fn encode(ref: PacketRef, fields: *zend.Array, sender_subclient: ?i64, target_subclient: ?i64) !*zend.String {
         const kind = try resolve(ref, 1);
-        const sender = std.math.cast(u2, sender_subclient orelse 0) orelse return errors.argumentValueError(3, "must be between 0 and 3", .{});
-        const target = std.math.cast(u2, target_subclient orelse 0) orelse return errors.argumentValueError(4, "must be between 0 and 3", .{});
+        const sender = std.math.cast(u2, sender_subclient orelse 0) orelse return exception.argumentValueError(3, "must be between 0 and 3", .{});
+        const target = std.math.cast(u2, target_subclient orelse 0) orelse return exception.argumentValueError(4, "must be between 0 and 3", .{});
         var zv = Zval.raw.init(.array, fields);
         return encodeValue(kind, &zv, sender, target, 2);
     }
@@ -118,7 +118,7 @@ pub fn pairOf(value: *c.zval, arg: u32) !Pair {
             if (ref != null and fields != null) return .{ .ref = deref(ref.?), .fields = deref(fields.?) };
         }
     }
-    return errors.argumentTypeError(arg, "must contain [packet, fields] pairs", .{});
+    return exception.argumentTypeError(arg, "must contain [packet, fields] pairs", .{});
 }
 
 fn kindOf(packet_id: i64) ?Kind {
@@ -128,15 +128,15 @@ fn kindOf(packet_id: i64) ?Kind {
 
 fn resolve(ref: PacketRef, arg: u32) !Kind {
     return switch (ref) {
-        .int => |value| kindOf(value) orelse errors.argumentValueError(arg, "must be a known packet ID", .{}),
-        .string => |value| packet.kindByName(value) orelse errors.argumentValueError(arg, "must be a known packet name", .{}),
+        .int => |value| kindOf(value) orelse exception.argumentValueError(arg, "must be a known packet ID", .{}),
+        .string => |value| packet.kindByName(value) orelse exception.argumentValueError(arg, "must be a known packet name", .{}),
     };
 }
 
 pub fn resolveZval(ref: *c.zval, arg: u32) !Kind {
-    if (Zval.raw.is(ref, .int)) return kindOf(Zval.raw.asUnchecked(ref, .int)) orelse errors.argumentValueError(arg, "must use known packet IDs", .{});
-    if (Zval.raw.is(ref, .string)) return packet.kindByName(Zval.raw.asUnchecked(ref, .string)) orelse errors.argumentValueError(arg, "must use known packet names", .{});
-    return errors.argumentTypeError(arg, "must use packet IDs or names", .{});
+    if (Zval.raw.is(ref, .int)) return kindOf(Zval.raw.asUnchecked(ref, .int)) orelse exception.argumentValueError(arg, "must use known packet IDs", .{});
+    if (Zval.raw.is(ref, .string)) return packet.kindByName(Zval.raw.asUnchecked(ref, .string)) orelse exception.argumentValueError(arg, "must use known packet names", .{});
+    return exception.argumentTypeError(arg, "must use packet IDs or names", .{});
 }
 
 fn readHeader(bytes: []const u8) !protocol.packet.Header {
@@ -156,8 +156,8 @@ fn decodeInto(bytes: []const u8, out: *c.zval) !bool {
     return true;
 }
 
-fn malformed(err: anyerror) errors.Exception {
-    return errors.throwExceptionEx(@import("../root.zig").PacketExceptionClass.entry, 0, "malformed packet: %s", .{@errorName(err).ptr});
+fn malformed(err: anyerror) exception.Error {
+    return exception.throwExceptionEx(@import("../root.zig").PacketExceptionClass.entry, 0, "malformed packet: %s", .{@errorName(err).ptr});
 }
 
 /// A converted packet whose exact encoded size is known, ready to be written.
@@ -180,13 +180,13 @@ pub fn prepare(arena: std.mem.Allocator, kind: Kind, fields: *c.zval, sender: u2
         inline else => |tag| @unionInit(packet.Packet, @tagName(tag), encoder.convert(@FieldType(packet.Packet, @tagName(tag)), fields) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
             var buffer: [512]u8 = undefined;
-            return errors.argumentValueError(arg, "%s", .{encoder.describe(&buffer).ptr});
+            return exception.argumentValueError(arg, "%s", .{encoder.describe(&buffer).ptr});
         }),
     };
     const header: protocol.packet.Header = .{ .packet_id = protocol.registry.packetId(kind).?, .sender_subclient = sender, .target_subclient = target };
     var counter: protocol.CountingWriter = .{};
     counter.writeVarU32(header.toWire()) catch unreachable;
-    protocol.version.encodePayload(&counter, value) catch return errors.argumentValueError(arg, "violates a protocol bound of %s", .{@tagName(kind).ptr});
+    protocol.version.encodePayload(&counter, value) catch return exception.argumentValueError(arg, "violates a protocol bound of %s", .{@tagName(kind).ptr});
     return .{ .header = header, .value = value, .size = counter.cursor };
 }
 

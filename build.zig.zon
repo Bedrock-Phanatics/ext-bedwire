@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .phpz = .{
-            .url = "git+https://github.com/TrixNEW/phpz#6a2ba0c0a03d69f8fb9bbfb8855ead3b9dda137f",
-            .hash = "phpz-0.1.0-D3BhOMKSFADSaCwelZeFzt2YrcxZ4LonpEekE7OdUHAT",
+            .url = "git+https://github.com/happystraw/phpz#00d4eb9fcfd42382aae489444727926b8bf16f1d",
+            .hash = "phpz-0.0.0-D3BhOA2wFQDjzXMVqZDonjuSSt89tqNJiLJKz2UIugAr",
         },
         .bedwire = .{
             .url = "https://codeload.github.com/Bedrock-Phanatics/bedwire/tar.gz/5d6e6fe26f4b45388744b3bf51ce76e4a9b163b5",

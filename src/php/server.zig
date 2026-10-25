@@ -8,18 +8,18 @@ const root = @import("../root.zig");
 const c = phpz.c;
 const zend = phpz.zend;
 const Zval = phpz.Zval;
-const errors = phpz.errors;
+const exception = phpz.exception;
 const Array = zend.Array;
 
 // The network thread outlives requests so it cannot use the Zend allocator.
 const gpa = std.heap.c_allocator;
 
-fn fail(comptime format: [:0]const u8, args: anytype) errors.Exception {
-    return errors.throwExceptionEx(root.ExceptionClass.entry, 0, format, args);
+fn fail(comptime format: [:0]const u8, args: anytype) exception.Error {
+    return exception.throwExceptionEx(root.ExceptionClass.entry, 0, format, args);
 }
 
-fn backpressure() errors.Exception {
-    return errors.throwException(root.BackpressureClass.entry, "bedwire queue is full", 0);
+fn backpressure() exception.Error {
+    return exception.throwException(root.BackpressureClass.entry, "bedwire queue is full", 0);
 }
 
 pub const Class = phpz.Class("Bedwire\\Server", Server, .{ .init = .default, .deinit = Server.deinit });
@@ -34,22 +34,22 @@ const Server = struct {
     }
 
     fn get(self: *Server) !*native.Host {
-        const host = self.host orelse return errors.throwError(null, "Bedwire\\Server is not initialized", .{});
-        if (std.Thread.getCurrentId() != self.owner) return errors.throwError(null, "Bedwire\\Server used from another thread", .{});
+        const host = self.host orelse return exception.throwError(null, "Bedwire\\Server is not initialized", .{});
+        if (std.Thread.getCurrentId() != self.owner) return exception.throwError(null, "Bedwire\\Server used from another thread", .{});
         return host;
     }
 
     pub fn __construct(address: []const u8, port: i64, options: ?*Array) !Server {
-        const port_value = std.math.cast(u16, port) orelse return errors.argumentValueError(2, "must be between 0 and 65535", .{});
+        const port_value = std.math.cast(u16, port) orelse return exception.argumentValueError(2, "must be between 0 and 65535", .{});
         var config: native.Config = .{
-            .address = std.Io.net.IpAddress.parse(address, port_value) catch return errors.argumentValueError(1, "must be an IP address", .{}),
+            .address = std.Io.net.IpAddress.parse(address, port_value) catch return exception.argumentValueError(1, "must be an IP address", .{}),
         };
         var path: [4096:0]u8 = undefined;
         var lists: Lists = .{};
         if (options) |table| try parseOptions(table, &config, &path, &lists);
 
         const host = native.Host.start(gpa, config) catch |err| return switch (err) {
-            error.InvalidConfig => errors.argumentValueError(3, "contains an out-of-range value", .{}),
+            error.InvalidConfig => exception.argumentValueError(3, "contains an out-of-range value", .{}),
             else => fail("cannot start server: %s", .{@errorName(err).ptr}),
         };
         return .{ .host = host, .owner = std.Thread.getCurrentId() };
@@ -57,7 +57,7 @@ const Server = struct {
 
     pub fn stop(self: *Server, timeout_ms: ?i64) !void {
         const host = try self.get();
-        const timeout = std.math.cast(u32, timeout_ms orelse 2000) orelse return errors.argumentValueError(1, "must be between 0 and 4294967295", .{});
+        const timeout = std.math.cast(u32, timeout_ms orelse 2000) orelse return exception.argumentValueError(1, "must be between 0 and 4294967295", .{});
         host.stop(timeout);
     }
 
@@ -71,20 +71,20 @@ const Server = struct {
 
     pub fn setStatus(self: *Server, name: []const u8, level: []const u8, max_players: i64, game_type: ?i64) !void {
         const host = try self.get();
-        if (name.len > native.max_status_text or !std.unicode.utf8ValidateSlice(name)) return errors.argumentValueError(1, "must be valid UTF-8 of at most 256 bytes", .{});
-        if (level.len > native.max_status_text or !std.unicode.utf8ValidateSlice(level)) return errors.argumentValueError(2, "must be valid UTF-8 of at most 256 bytes", .{});
-        const max = std.math.cast(u32, max_players) orelse return errors.argumentValueError(3, "must not be negative", .{});
-        const mode = std.math.cast(i32, game_type orelse 0) orelse return errors.argumentValueError(4, "must be between 0 and 2", .{});
-        if (mode < 0 or mode > 2) return errors.argumentValueError(4, "must be between 0 and 2", .{});
+        if (name.len > native.max_status_text or !std.unicode.utf8ValidateSlice(name)) return exception.argumentValueError(1, "must be valid UTF-8 of at most 256 bytes", .{});
+        if (level.len > native.max_status_text or !std.unicode.utf8ValidateSlice(level)) return exception.argumentValueError(2, "must be valid UTF-8 of at most 256 bytes", .{});
+        const max = std.math.cast(u32, max_players) orelse return exception.argumentValueError(3, "must not be negative", .{});
+        const mode = std.math.cast(i32, game_type orelse 0) orelse return exception.argumentValueError(4, "must be between 0 and 2", .{});
+        if (mode < 0 or mode > 2) return exception.argumentValueError(4, "must be between 0 and 2", .{});
         host.setStatus(name, level, max, mode);
     }
 
     /// Returns a flat `[kind, session, data, ...]` list, which builds one packed array per poll.
     pub fn poll(self: *Server, max_events: ?i64, timeout_ms: ?i64) !*Array {
         const host = try self.get();
-        const max = std.math.cast(u32, max_events orelse 4096) orelse return errors.argumentValueError(1, "must be between 1 and 1048576", .{});
-        if (max == 0 or max > 1 << 20) return errors.argumentValueError(1, "must be between 1 and 1048576", .{});
-        const timeout = std.math.cast(u32, timeout_ms orelse 0) orelse return errors.argumentValueError(2, "must be between 0 and 4294967295", .{});
+        const max = std.math.cast(u32, max_events orelse 4096) orelse return exception.argumentValueError(1, "must be between 1 and 1048576", .{});
+        if (max == 0 or max > 1 << 20) return exception.argumentValueError(1, "must be between 1 and 1048576", .{});
+        const timeout = std.math.cast(u32, timeout_ms orelse 0) orelse return exception.argumentValueError(2, "must be between 0 and 4294967295", .{});
 
         host.waitEvents(timeout);
         var list = Array.ListBuilder.init(@as(u32, @min(max, 256)) * 3);
@@ -109,7 +109,7 @@ const Server = struct {
     /// Encodes `[packet, fields]` pairs straight into the send queue, skipping intermediate PHP strings.
     pub fn sendPackets(self: *Server, session: i64, packets: *Array) !bool {
         const host = try self.get();
-        if (packets.len() > native.max_packets_per_batch) return errors.argumentValueError(2, "has more than 1024 packets", .{});
+        if (packets.len() > native.max_packets_per_batch) return exception.argumentValueError(2, "has more than 1024 packets", .{});
         const arena = scratch.begin();
         defer scratch.end(arena);
         const encoded = try arena.allocator().alloc(protocol_php.Encoded, packets.len());
@@ -128,10 +128,10 @@ const Server = struct {
 
     /// Sends a batch body as Bedrock frames it, each packet behind its varint length, compressing it on the network thread.
     pub fn sendRawBatch(self: *Server, session: i64, batch: []const u8, offset: ?i64) !bool {
-        const start = std.math.cast(usize, offset orelse 0) orelse return errors.argumentValueError(3, "must not be negative", .{});
-        if (start > batch.len) return errors.argumentValueError(3, "is past the end of the batch", .{});
+        const start = std.math.cast(usize, offset orelse 0) orelse return exception.argumentValueError(3, "must not be negative", .{});
+        if (start > batch.len) return exception.argumentValueError(3, "is past the end of the batch", .{});
         (try self.get()).sendRawBatch(@bitCast(session), batch[start..]) catch |err| return switch (err) {
-            error.MalformedBatch => errors.argumentValueError(2, "is not a batch of varint length-prefixed packets", .{}),
+            error.MalformedBatch => exception.argumentValueError(2, "is not a batch of varint length-prefixed packets", .{}),
             else => |send_error| queued(send_error),
         };
         return true;
@@ -150,7 +150,7 @@ const Server = struct {
     /// Blocks the calling thread, which needs no Server of its own, until events are published after the
     /// sequence `seen` or the timeout passes. Returns the new sequence, or null once the server is gone.
     pub fn waitForEvents(handle: i64, seen: i64, timeout_ms: ?i64) !?i64 {
-        const timeout = std.math.cast(u32, timeout_ms orelse 1000) orelse return errors.argumentValueError(3, "must be between 0 and 4294967295", .{});
+        const timeout = std.math.cast(u32, timeout_ms orelse 1000) orelse return exception.argumentValueError(3, "must be between 0 and 4294967295", .{});
         const sequence = native.signal.wait(@bitCast(handle), @truncate(@as(u64, @bitCast(seen))), timeout) orelse return null;
         return sequence;
     }
@@ -178,9 +178,9 @@ fn queued(result: native.SendError!void) !bool {
     result catch |err| return switch (err) {
         error.Closed => false,
         error.Backpressure => backpressure(),
-        error.TooLarge => errors.argumentValueError(2, "exceeds the maximum batch size", .{}),
-        error.TooManyPackets => errors.argumentValueError(2, "has more than 1024 packets", .{}),
-        error.EmptyBatch => errors.argumentValueError(2, "must not be empty", .{}),
+        error.TooLarge => exception.argumentValueError(2, "exceeds the maximum batch size", .{}),
+        error.TooManyPackets => exception.argumentValueError(2, "has more than 1024 packets", .{}),
+        error.EmptyBatch => exception.argumentValueError(2, "must not be empty", .{}),
     };
     return true;
 }
@@ -190,8 +190,8 @@ fn collect(packets: *Array, slices: *[native.max_packets_per_batch][]const u8, a
     var values = packets.fastValueIterator();
     while (values.next()) |raw| {
         const value = deref(raw);
-        if (!Zval.raw.is(value, .string)) return errors.argumentTypeError(arg, "must contain only strings", .{});
-        if (count == slices.len) return errors.argumentValueError(arg, "has more than 1024 packets", .{});
+        if (!Zval.raw.is(value, .string)) return exception.argumentTypeError(arg, "must contain only strings", .{});
+        if (count == slices.len) return exception.argumentValueError(arg, "has more than 1024 packets", .{});
         slices[count] = Zval.raw.asUnchecked(value, .string);
         count += 1;
     }
@@ -213,15 +213,15 @@ const Lists = struct {
 };
 
 fn stringList(value: *c.zval, comptime name: []const u8, out: anytype) ![]@TypeOf(out[0]) {
-    if (!Zval.raw.is(value, .array)) return errors.argumentTypeError(3, "option \"" ++ name ++ "\" must be a list of strings", .{});
+    if (!Zval.raw.is(value, .array)) return exception.argumentTypeError(3, "option \"" ++ name ++ "\" must be a list of strings", .{});
     var count: usize = 0;
     var items = Zval.raw.asUnchecked(value, .array).fastValueIterator();
     while (items.next()) |raw| {
         const item = deref(raw);
-        if (!Zval.raw.is(item, .string)) return errors.argumentTypeError(3, "option \"" ++ name ++ "\" must be a list of strings", .{});
-        if (count == out.len) return errors.argumentValueError(3, "option \"" ++ name ++ "\" has too many entries", .{});
+        if (!Zval.raw.is(item, .string)) return exception.argumentTypeError(3, "option \"" ++ name ++ "\" must be a list of strings", .{});
+        if (count == out.len) return exception.argumentValueError(3, "option \"" ++ name ++ "\" has too many entries", .{});
         const text = Zval.raw.asUnchecked(item, .string);
-        if (text.len == 0 or std.mem.indexOfScalar(u8, text, 0) != null) return errors.argumentValueError(3, "option \"" ++ name ++ "\" has an empty or invalid entry", .{});
+        if (text.len == 0 or std.mem.indexOfScalar(u8, text, 0) != null) return exception.argumentValueError(3, "option \"" ++ name ++ "\" has an empty or invalid entry", .{});
         // Zend strings are NUL-terminated, so the bytes can be borrowed as C strings.
         out[count] = if (@TypeOf(out[0]) == [:0]const u8) text.ptr[0..text.len :0] else text;
         count += 1;
@@ -234,23 +234,23 @@ fn parseOptions(table: *Array, config: *native.Config, path: *[4096:0]u8, lists:
     while (entries.next()) |entry| {
         const key = switch (entry.key) {
             .string => |name| name,
-            .int => return errors.argumentValueError(3, "must use string keys", .{}),
+            .int => return exception.argumentValueError(3, "must use string keys", .{}),
         };
         const value = deref(entry.value);
 
         if (std.mem.eql(u8, key, "identity_file")) {
-            if (!Zval.raw.is(value, .string)) return errors.argumentTypeError(3, "option \"identity_file\" must be string", .{});
+            if (!Zval.raw.is(value, .string)) return exception.argumentTypeError(3, "option \"identity_file\" must be string", .{});
             const text = Zval.raw.asUnchecked(value, .string);
-            if (text.len == 0 or text.len >= path.len or std.mem.indexOfScalar(u8, text, 0) != null) return errors.argumentValueError(3, "option \"identity_file\" must be a path", .{});
+            if (text.len == 0 or text.len >= path.len or std.mem.indexOfScalar(u8, text, 0) != null) return exception.argumentValueError(3, "option \"identity_file\" must be a path", .{});
             @memcpy(path[0..text.len], text);
             path[text.len] = 0;
             config.identity_file = path[0..text.len];
             continue;
         }
         if (std.mem.eql(u8, key, "bind_address")) {
-            if (!Zval.raw.is(value, .string)) return errors.argumentTypeError(3, "option \"bind_address\" must be string", .{});
+            if (!Zval.raw.is(value, .string)) return exception.argumentTypeError(3, "option \"bind_address\" must be string", .{});
             const text = Zval.raw.asUnchecked(value, .string);
-            _ = std.Io.net.IpAddress.parse(text, 0) catch return errors.argumentValueError(3, "option \"bind_address\" must be an IP address", .{});
+            _ = std.Io.net.IpAddress.parse(text, 0) catch return exception.argumentValueError(3, "option \"bind_address\" must be an IP address", .{});
             config.bind_address = text.ptr[0..text.len :0];
             continue;
         }
@@ -264,21 +264,21 @@ fn parseOptions(table: *Array, config: *native.Config, path: *[4096:0]u8, lists:
         }
         inline for (bool_options) |name| {
             if (std.mem.eql(u8, key, name)) {
-                if (!Zval.raw.is(value, .bool)) return errors.argumentTypeError(3, "option \"" ++ name ++ "\" must be bool", .{});
+                if (!Zval.raw.is(value, .bool)) return exception.argumentTypeError(3, "option \"" ++ name ++ "\" must be bool", .{});
                 @field(config, name) = Zval.raw.asUnchecked(value, .bool);
                 break;
             }
         } else {
-            if (!Zval.raw.is(value, .int)) return errors.argumentTypeError(3, "option \"%.*s\" must be int", named(key));
+            if (!Zval.raw.is(value, .int)) return exception.argumentTypeError(3, "option \"%.*s\" must be int", named(key));
             const number = Zval.raw.asUnchecked(value, .int);
-            if (number < 0) return errors.argumentValueError(3, "option \"%.*s\" must not be negative", named(key));
+            if (number < 0) return exception.argumentValueError(3, "option \"%.*s\" must not be negative", named(key));
             inline for (int_options ++ port_options) |name| {
                 if (std.mem.eql(u8, key, name)) {
                     @field(config, name) = std.math.cast(@FieldType(native.Config, name), number) orelse
-                        return errors.argumentValueError(3, "option \"%.*s\" is out of range", named(key));
+                        return exception.argumentValueError(3, "option \"%.*s\" is out of range", named(key));
                     break;
                 }
-            } else return errors.argumentValueError(3, "has unknown option \"%.*s\"", named(key));
+            } else return exception.argumentValueError(3, "has unknown option \"%.*s\"", named(key));
         }
     }
 }

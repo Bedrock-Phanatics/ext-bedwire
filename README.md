@@ -1,6 +1,6 @@
 # ext-bedwire
 
-The native networking and protocol layer for Quark. It is a PHP extension built with [phpz](https://github.com/TrixNEW/phpz), and it provides three things:
+The native networking and protocol layer for Quark. It is a PHP extension built with [phpz](https://github.com/happystraw/phpz), and it provides three things:
 
 - **Network:** a dedicated network thread runs the NetherNet transport ([nethernet-zig](https://github.com/Bedrock-Phanatics/nethernet-zig)). That covers HTTP signaling, LAN discovery and WebRTC data channels, and the thread also verifies logins. Sessions are handled by [Bedwire](https://github.com/Bedrock-Phanatics/bedwire): batching, compression, stage checks and rate limits.
 - **Protocol:** every Bedrock packet is decoded and encoded by [protocol-zig](https://github.com/Bedrock-Phanatics/protocol-zig). PHP sees the packets as arrays.
