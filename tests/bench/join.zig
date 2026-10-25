@@ -1,5 +1,7 @@
-//! Joins a server like an offline vanilla client: `join <port> <name> [seconds]`.
+//! Joins a server like an offline vanilla client: `join <port> <name> [seconds] [record]`.
 //! It logs in with a self-signed identity, accepts the packs, spawns, stays for the given time and prints one JSON line.
+//! With a record file it also decodes every server packet strictly, writes each one as `<id> <hex>`, and plays a little
+//! after spawning: it walks, chats and runs a command.
 const std = @import("std");
 const bedwire = @import("bedwire");
 const peer_mod = @import("peer.zig");
@@ -11,10 +13,15 @@ const allocator = std.heap.smp_allocator;
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-    if (args.len < 3 or args.len > 4) return error.Usage;
+    if (args.len < 3 or args.len > 5) return error.Usage;
     const port = try std.fmt.parseInt(u16, args[1], 10);
     const name = args[2];
-    const seconds = if (args.len == 4) try std.fmt.parseInt(u32, args[3], 10) else 3;
+    const seconds = if (args.len >= 4) try std.fmt.parseInt(u32, args[3], 10) else 3;
+
+    var record_buffer: [64 * 1024]u8 = undefined;
+    const record_file = if (args.len == 5) try std.Io.Dir.cwd().createFile(io, args[4], .{}) else null;
+    defer if (record_file) |file| file.close(io);
+    var record_writer = if (record_file) |file| file.writer(io, &record_buffer) else null;
 
     var pool = try peer_mod.clientPool(allocator);
     defer pool.deinit();
@@ -25,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
     var storage: [512]u8 = undefined;
     try peer.send(&.{peer_mod.typed(&storage, .{ .request_network_settings = .{ .client_network_version = protocol.Current.protocol_number } })});
 
-    var join: Join = .{ .peer = peer, .name = name };
+    var join: Join = .{ .peer = peer, .name = name, .record = if (record_writer) |*writer| &writer.interface else null };
     const deadline = start + 30 * std.time.ns_per_s;
     var stay_until: ?u64 = null;
     while (true) {
@@ -35,6 +42,7 @@ pub fn main(init: std.process.Init) !void {
         } else if (join.spawned_ns != null) {
             stay_until = now + @as(u64, seconds) * std.time.ns_per_s;
         } else if (now > deadline) return fail("timed out in state {t}", .{peer.session.state});
+        if (join.record != null and join.spawned_ns != null) try join.play(now);
 
         const token = peer.connection.prepareWait();
         while (peer.connection.poll() catch return fail("connection closed in state {t}", .{peer.session.state})) |event| {
@@ -43,6 +51,7 @@ pub fn main(init: std.process.Init) !void {
         peer.connection.peer.wakeup.wait(io, token, .{ .duration = .{ .raw = .fromMilliseconds(5), .clock = .awake } }) catch {};
     }
 
+    if (join.record) |writer| try writer.flush();
     var out: [256]u8 = undefined;
     var stdout = std.Io.File.stdout().writer(io, &.{});
     try stdout.interface.writeAll(try std.fmt.bufPrint(&out, "{{\"spawn_ms\":{d:.1},\"packets\":{d},\"chunks\":{d}}}\n", .{
@@ -64,6 +73,62 @@ const Join = struct {
     packets: usize = 0,
     chunks: usize = 0,
     spawned_ns: ?u64 = null,
+    record: ?*std.Io.Writer = null,
+    position: protocol.Vec3f = .{ .x = 0, .y = 0, .z = 0 },
+    tick: u64 = 0,
+    next_input_ns: u64 = 0,
+
+    /// Sends an input every 50 ms, like a client standing still, then a chat line and a command once.
+    fn play(self: *Join, now: u64) !void {
+        if (now < self.next_input_ns) return;
+        self.next_input_ns = now + 50 * std.time.ns_per_ms;
+        var storage: [512]u8 = undefined;
+        const zero: protocol.Vec2f = .{ .x = 0, .y = 0 };
+        try self.peer.send(&.{peer_mod.typed(&storage, .{ .player_auth_input = .{
+            .player_rotation = zero,
+            .position = self.position,
+            .move_vector = zero,
+            .player_head_rotation = 0,
+            .input_data = .init(&.{}),
+            .input_mode = .mouse,
+            .play_mode = .normal,
+            .new_interaction_model = .crosshair,
+            .interact_rotation = zero,
+            .client_tick = self.tick,
+            .pos_delta = .{ .x = 0, .y = 0, .z = 0 },
+            .item_use_transaction = null,
+            .item_stack_request = null,
+            .player_block_actions = null,
+            .vehicle_rotation = null,
+            .client_predicted_vehicle = null,
+            .analog_move_vector = zero,
+            .camera_orientation = .{ .x = 0, .y = 0, .z = 1 },
+            .raw_move_vector = zero,
+        } })});
+        self.tick += 1;
+        if (self.tick == 10) {
+            try self.peer.send(&.{peer_mod.typed(&storage, .{ .text = .{
+                .localize = false,
+                .body = .{ .author_and_message = .{ .message_type = .chat, .player_name = self.name, .message = "hello from bedwire-join" } },
+                .senders_xuid = "",
+                .platform_id = "",
+                .filtered_message = null,
+            } })});
+            try self.peer.send(&.{peer_mod.typed(&storage, .{ .command_request = .{
+                .command = "/version",
+                .origin = .{ .type = "player", .uuid = @splat(0), .request_id = "", .player_id = 0 },
+                .is_internal = false,
+                .version = "latest",
+            } })});
+        }
+    }
+
+    fn write(self: *Join, packet: anytype) !void {
+        const writer = self.record orelse return;
+        if (packet.kind == null) return fail("server sent unknown packet ID {d}", .{packet.id});
+        _ = self.peer.session.decodePacket(packet) catch |err| return fail("server sent a malformed {t}: {t}", .{ packet.kind.?, err });
+        try writer.print("{d} {x}\n", .{ packet.id, packet.bytes });
+    }
 
     fn deliver(self: *Join, payload: []const u8) !void {
         var batch = self.peer.session.ingest(payload) catch |err| return fail("rejected a server batch in state {t}: {t}", .{ self.peer.session.state, err });
@@ -71,6 +136,7 @@ const Join = struct {
         var storage: [64]u8 = undefined;
         while (batch.next()) |packet| {
             self.packets += 1;
+            try self.write(packet);
             const kind = packet.kind orelse continue;
             switch (kind) {
                 .network_settings => {
@@ -96,6 +162,7 @@ const Join = struct {
                 },
                 .start_game => {
                     self.runtime_id = try startGameRuntimeId(packet.bytes);
+                    if (self.record != null) self.position = (try self.peer.session.decodePacket(packet)).value.typed.start_game.position;
                     try self.peer.session.advance(.spawn_ready);
                     try self.peer.send(&.{peer_mod.typed(&storage, .{ .request_chunk_radius = .{ .chunk_radius = 4, .max_chunk_radius = 4 } })});
                 },
