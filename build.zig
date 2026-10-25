@@ -134,6 +134,7 @@ pub fn build(b: *std.Build) void {
     }) });
     b.step("join", "Install a client that joins a server as an offline player").dependOn(&b.addInstallArtifact(join, .{}).step);
     phpt.step.dependOn(&install_client.step);
+    if (libc_file) |file| for ([_]*std.Build.Step.Compile{ suite, bench, client, join }) |artifact| artifact.setLibCFile(.{ .cwd_relative = file });
 
     const php_bench = b.addSystemCommand(&.{ php, "-n", "-d" });
     php_bench.addPrefixedFileArg("extension=", binary);
