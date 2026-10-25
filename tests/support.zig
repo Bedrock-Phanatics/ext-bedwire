@@ -267,20 +267,23 @@ pub fn login(host: *native.Host, client: *Client, session: u64, compression: pac
     _ = try client.expectPackets(3, 5000);
     try testing.expectEqual(bedwire.State.resource_packs, client.session.state);
 
+    try host.send(session, &.{packets.resourcePackStack(&b)});
+    _ = try client.expectPackets(4, 5000);
     const finished = packets.stackFinished(&a);
     try client.send(&.{finished});
     try expectPacket(host, session, finished);
-    try client.session.advance(.waiting_for_start_game);
+    try testing.expectEqual(bedwire.State.waiting_for_start_game, client.session.settle());
 
     var start: [16]u8 = undefined;
     var after: [16]u8 = undefined;
-    try host.send(session, &.{ packets.raw(&start, packets.id(.start_game), "start"), packets.raw(&after, 1020, "after-start") });
-    _ = try client.expectPackets(5, 5000);
-    try client.session.advance(.spawn_ready);
+    var spawn: [16]u8 = undefined;
+    try host.send(session, &.{ packets.startGame(&start), packets.raw(&after, 1020, "after-start"), packets.playerSpawn(&spawn) });
+    _ = try client.expectPackets(7, 5000);
+    try testing.expectEqual(bedwire.State.spawn_ready, client.session.settle());
 
-    const initialised = packets.raw(&a, packets.id(.set_local_player_as_initialised), "\x01");
+    const initialised = packets.initialised(&a);
     try client.send(&.{initialised});
     try expectPacket(host, session, initialised);
-    try client.session.advance(.in_game);
+    try testing.expectEqual(bedwire.State.in_game, client.session.settle());
     client.clear();
 }

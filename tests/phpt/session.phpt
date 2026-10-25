@@ -41,8 +41,10 @@ while ((count($disconnects) < 3 || count($connects) < 3) && microtime(true) < $d
                 1 => $server->acceptLogin($session, $der) && $server->sendPackets($session, [
                     ["play_status", ["status" => 0]],
                     ["resource_packs_info", ["resource_pack_required" => false, "has_addon_packs" => false, "has_scripts" => false, "force_disable_vibrant_visuals" => false, "world_template_id_and_version" => ["pack_uuid" => str_repeat("\0", 16), "pack_version" => ""], "resource_packs" => []]],
+                    ["resource_pack_stack", ["texture_pack_required" => false, "texture_pack_list" => [], "base_game_version" => "", "experiments" => ["toggles" => [], "experiments_ever_toggled" => false], "include_editor_packs" => false]],
                 ]),
-                2 => $server->send($session, "\x0bstart"),
+                // StartGame only needs the player's unique and runtime IDs here.
+                2 => $server->send($session, "\x0b\x02\x01") && $server->sendPackets($session, [["play_status", ["status" => 3]]]),
                 default => null,
             };
         }

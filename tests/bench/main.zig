@@ -269,7 +269,7 @@ const Server = struct {
     /// Any valid key will do, since NetherNet sessions are not encrypted by Bedrock.
     key: @TypeOf(bedwire.crypto.spki.encode(undefined)),
     steps: std.AutoHashMapUnmanaged(u64, u8) = .empty,
-    storage: [4][512]u8 = undefined,
+    storage: [6][512]u8 = undefined,
     echoed: usize = 0,
 
     fn drain(self: *Server) !void {
@@ -306,9 +306,18 @@ const Server = struct {
                     .force_disable_vibrant_visuals = false,
                     .world_template_id_and_version = .{ .pack_uuid = @splat(0), .pack_version = "" },
                     .resource_packs = .empty,
+                } }), peer_mod.typed(&self.storage[3], .{ .resource_pack_stack = .{
+                    .texture_pack_required = false,
+                    .texture_pack_list = .empty,
+                    .base_game_version = "",
+                    .experiments = .{ .toggles = .empty, .experiments_ever_toggled = false },
+                    .include_editor_packs = false,
                 } }) });
             },
-            2 => try self.host.send(id, &.{peer_mod.raw(&self.storage[3], protocol.Current.packetId(.start_game).?, "start")}),
+            2 => try self.host.send(id, &.{
+                peer_mod.raw(&self.storage[4], protocol.Current.packetId(.start_game).?, "\x02\x01"),
+                peer_mod.typed(&self.storage[5], .{ .play_status = .{ .status = .playerspawn } }),
+            }),
             else => {},
         }
     }

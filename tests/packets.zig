@@ -55,6 +55,31 @@ pub fn resourcePacksInfo(storage: []u8) []const u8 {
     } });
 }
 
+pub fn resourcePackStack(storage: []u8) []const u8 {
+    return typed(storage, .{ .resource_pack_stack = .{
+        .texture_pack_required = false,
+        .texture_pack_list = .empty,
+        .base_game_version = "",
+        .experiments = .{ .toggles = .empty, .experiments_ever_toggled = false },
+        .include_editor_packs = false,
+    } });
+}
+
+pub const runtime_id: u64 = 1;
+
+/// Only the leading unique and runtime IDs, which is all a session reads from StartGame.
+pub fn startGame(storage: []u8) []const u8 {
+    return raw(storage, id(.start_game), "\x02\x01");
+}
+
+pub fn playerSpawn(storage: []u8) []const u8 {
+    return typed(storage, .{ .play_status = .{ .status = .playerspawn } });
+}
+
+pub fn initialised(storage: []u8) []const u8 {
+    return typed(storage, .{ .set_local_player_as_initialised = .{ .player_id = runtime_id } });
+}
+
 pub fn stackFinished(storage: []u8) []const u8 {
     return typed(storage, .{ .resource_pack_client_response = .{
         .response = .{ .resource_pack_stack_finished = "resourcepackstackfinished" },

@@ -118,13 +118,13 @@ pub const Peer = struct {
         try self.send(&.{typed(&storage, .{ .request_network_settings = .{ .client_network_version = protocol.Current.protocol_number } })});
         try self.waitFor(1, 10_000);
         try self.send(&.{typed(&storage, .{ .login = .{ .client_network_version = protocol.Current.protocol_number, .connection_request = "bench" } })});
-        try self.waitFor(3, 10_000);
-        try self.send(&.{typed(&storage, .{ .resource_pack_client_response = .{ .response = .{ .resource_pack_stack_finished = "resourcepackstackfinished" } } })});
-        try self.session.advance(.waiting_for_start_game);
         try self.waitFor(4, 10_000);
-        try self.session.advance(.spawn_ready);
-        try self.send(&.{raw(&storage, protocol.Current.packetId(.set_local_player_as_initialised).?, "\x01")});
-        try self.session.advance(.in_game);
+        try self.send(&.{typed(&storage, .{ .resource_pack_client_response = .{ .response = .{ .resource_pack_stack_finished = "resourcepackstackfinished" } } })});
+        if (self.session.settle() != .waiting_for_start_game) return error.InvalidState;
+        try self.waitFor(6, 10_000);
+        if (self.session.settle() != .spawn_ready) return error.InvalidState;
+        try self.send(&.{typed(&storage, .{ .set_local_player_as_initialised = .{ .player_id = 1 } })});
+        if (self.session.settle() != .in_game) return error.InvalidState;
         self.received = 0;
     }
 };

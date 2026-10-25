@@ -596,26 +596,16 @@ pub const Worker = struct {
         defer packets.deinit();
         const id = self.sessionId(slot);
 
-        var next: ?bedwire.State = null;
         while (packets.next()) |packet| {
             if (!self.takeToken(slot)) return error.PacketRate;
-            if (packet.kind) |kind| switch (kind) {
-                .login => if (self.authority != null) try self.authenticate(slot, packet),
-                .resource_pack_client_response => if (slot.session.state == .resource_packs and stackFinished(&slot.session, packet)) {
-                    next = .waiting_for_start_game;
-                },
-                .set_local_player_as_initialised => if (slot.session.state == .spawn_ready) {
-                    next = .in_game;
-                },
-                else => {},
-            };
+            if (packet.kind == .login and self.authority != null) try self.authenticate(slot, packet);
             const bytes = self.emit(.packet, 8 + packet.bytes.len) orelse return error.EventQueueFull;
             std.mem.writeInt(u64, bytes[0..8], id, .little);
             @memcpy(bytes[8..], packet.bytes);
             self.commitEvent();
             self.stats.packets_received += 1;
         }
-        if (next) |state| try slot.session.advance(state);
+        _ = slot.session.settle();
     }
 
     /// Verifies Microsoft-signed logins here and reports them before the Login packet. Others, such as offline
@@ -672,12 +662,6 @@ pub const Worker = struct {
             self.keys.source = source;
         }
         return &self.keys.set.?;
-    }
-
-    fn stackFinished(session: *bedwire.Session, packet: bedwire.Packet) bool {
-        const decoded = session.decodePacket(packet) catch return false;
-        if (decoded.value != .typed or decoded.value.typed != .resource_pack_client_response) return false;
-        return decoded.value.typed.resource_pack_client_response.response == .resource_pack_stack_finished;
     }
 
     fn takeToken(self: *Worker, slot: *Slot) bool {
@@ -809,8 +793,8 @@ pub const Worker = struct {
                     self.fail(slot, .protocol);
                     return err;
                 };
-            } else if (kind == .start_game and slot.session.state == .waiting_for_start_game) {
-                try slot.session.advance(.spawn_ready);
+            } else if (kind == .start_game) {
+                _ = slot.session.settle();
             }
         }
         if (len != 0) try self.flushGroup(slot, len);
