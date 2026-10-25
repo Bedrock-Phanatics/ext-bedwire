@@ -45,6 +45,8 @@ var_dump(Nbt::writeMultiple([new TreeRoot($root), new TreeRoot($root)], Nbt::NET
 $headless = Nbt::writeHeadless($items, Nbt::BEDROCK);
 echo bin2hex($headless), "\n";
 var_dump(Nbt::readHeadless($headless, Nbt::BEDROCK, 9)->getValue()[1]->getValue());
+[$list, $end] = Nbt::readHeadlessAt("xx" . $headless . "yy", Nbt::BEDROCK, 9, 2);
+var_dump($list->getTagType(), $end === 2 + strlen($headless));
 var_dump(Nbt::transcode(Nbt::write(new TreeRoot($root), Nbt::BEDROCK), Nbt::BEDROCK, Nbt::NETWORK) === $network);
 
 foreach ([
@@ -121,6 +123,8 @@ int(3)
 bool(true)
 030200000001000000feffffff
 int(-2)
+int(3)
+bool(true)
 bool(true)
 invalid NBT: TypeMismatch
 invalid NBT: SizeLimitExceeded

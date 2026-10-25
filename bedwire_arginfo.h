@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: d169e447600449f6a817c24ba6c503236e038551 */
+ * Stub hash: 2c85d222d46eb8b112f390e5dbaddee9ce09d723 */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Bedwire_Server___construct, 0, 0, 2)
 	ZEND_ARG_TYPE_INFO(0, address, IS_STRING, 0)
@@ -150,6 +150,14 @@ ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Bedwire_Nbt_readHeadless, 0
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, maxDepth, IS_LONG, 0, "0")
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Nbt_readHeadlessAt, 0, 3, IS_ARRAY, 0)
+	ZEND_ARG_TYPE_INFO(0, data, IS_STRING, 0)
+	ZEND_ARG_TYPE_INFO(0, format, IS_LONG, 0)
+	ZEND_ARG_TYPE_INFO(0, type, IS_LONG, 0)
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, offset, IS_LONG, 0, "0")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, maxDepth, IS_LONG, 0, "0")
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Nbt_readMultiple, 0, 2, IS_ARRAY, 0)
 	ZEND_ARG_TYPE_INFO(0, data, IS_STRING, 0)
 	ZEND_ARG_TYPE_INFO(0, format, IS_LONG, 0)
@@ -203,6 +211,7 @@ ZEND_METHOD(Bedwire_Nbt, length);
 ZEND_METHOD(Bedwire_Nbt, read);
 ZEND_METHOD(Bedwire_Nbt, readAt);
 ZEND_METHOD(Bedwire_Nbt, readHeadless);
+ZEND_METHOD(Bedwire_Nbt, readHeadlessAt);
 ZEND_METHOD(Bedwire_Nbt, readMultiple);
 ZEND_METHOD(Bedwire_Nbt, write);
 ZEND_METHOD(Bedwire_Nbt, writeHeadless);
@@ -249,6 +258,7 @@ static const zend_function_entry class_Bedwire_Nbt_methods[] = {
 	ZEND_ME(Bedwire_Nbt, read, arginfo_class_Bedwire_Nbt_read, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
 	ZEND_ME(Bedwire_Nbt, readAt, arginfo_class_Bedwire_Nbt_readAt, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
 	ZEND_ME(Bedwire_Nbt, readHeadless, arginfo_class_Bedwire_Nbt_readHeadless, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
+	ZEND_ME(Bedwire_Nbt, readHeadlessAt, arginfo_class_Bedwire_Nbt_readHeadlessAt, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
 	ZEND_ME(Bedwire_Nbt, readMultiple, arginfo_class_Bedwire_Nbt_readMultiple, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
 	ZEND_ME(Bedwire_Nbt, write, arginfo_class_Bedwire_Nbt_write, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
 	ZEND_ME(Bedwire_Nbt, writeHeadless, arginfo_class_Bedwire_Nbt_writeHeadless, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)

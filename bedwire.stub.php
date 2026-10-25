@@ -117,6 +117,8 @@ namespace Bedwire {
 
         public static function readHeadless(string $data, int $format, int $type, int $offset = 0, int $maxDepth = 0): \pocketmine\nbt\tag\Tag {}
 
+        public static function readHeadlessAt(string $data, int $format, int $type, int $offset = 0, int $maxDepth = 0): array {}
+
         public static function readMultiple(string $data, int $format, int $maxDepth = 0): array {}
 
         public static function write(\pocketmine\nbt\TreeRoot $root, int $format): string {}

@@ -334,16 +334,19 @@ pub const Nbt = struct {
     }
 
     pub fn readHeadless(data: []const u8, format: i64, tag_type: i64, start: ?i64, max_depth: ?i64) !*zend.Object {
-        const fmt = try parseFormat(format, 2);
-        const kind = TagType.fromByte(std.math.cast(u8, tag_type) orelse 0xff) catch return errors.argumentValueError(3, "must be a tag type", .{});
-        const from = try parseOffset(data, start, 4);
-        const arena = scratch.begin();
-        defer scratch.end(arena);
-        const parsed = nbt.parsePayload(arena.allocator(), data[from..], kind, native.nbt.options(fmt, try parseDepth(max_depth, 5))) catch |err| return invalid(err);
-        var reader: Reader = .{ .unsigned_int_arrays = fmt != .network };
         var out: c.zval = undefined;
-        try reader.tagObject(&parsed.tag, &out);
+        _ = try readHeadlessInto(data, format, tag_type, start, max_depth, &out);
         return objectResult(&out);
+    }
+
+    /// Like readHeadless, and also returns the offset just past the tag: `[Tag, int]`.
+    pub fn readHeadlessAt(data: []const u8, format: i64, tag_type: i64, start: ?i64, max_depth: ?i64) !*zend.Array {
+        var tag: c.zval = undefined;
+        const end = try readHeadlessInto(data, format, tag_type, start, max_depth, &tag);
+        var list = zend.Array.ListBuilder.init(2);
+        list.appendValue(&tag);
+        list.appendAssumeCapacity(.int, @intCast(end));
+        return list.finish();
     }
 
     pub fn readMultiple(data: []const u8, format: i64, max_depth: ?i64) !*zend.Array {
@@ -410,5 +413,17 @@ fn readInto(data: []const u8, format: i64, start: ?i64, max_depth: ?i64, out: *c
     const parsed = nbt.parsePrefix(arena.allocator(), data[from..], native.nbt.options(fmt, try parseDepth(max_depth, 4))) catch |err| return invalid(err);
     var reader: Reader = .{ .unsigned_int_arrays = fmt != .network };
     try reader.treeRoot(&parsed.document, out);
+    return from + parsed.len;
+}
+
+fn readHeadlessInto(data: []const u8, format: i64, tag_type: i64, start: ?i64, max_depth: ?i64, out: *c.zval) !usize {
+    const fmt = try parseFormat(format, 2);
+    const kind = TagType.fromByte(std.math.cast(u8, tag_type) orelse 0xff) catch return errors.argumentValueError(3, "must be a tag type", .{});
+    const from = try parseOffset(data, start, 4);
+    const arena = scratch.begin();
+    defer scratch.end(arena);
+    const parsed = nbt.parsePayload(arena.allocator(), data[from..], kind, native.nbt.options(fmt, try parseDepth(max_depth, 5))) catch |err| return invalid(err);
+    var reader: Reader = .{ .unsigned_int_arrays = fmt != .network };
+    try reader.tagObject(&parsed.tag, out);
     return from + parsed.len;
 }

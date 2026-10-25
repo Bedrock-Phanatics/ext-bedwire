@@ -189,7 +189,7 @@ Encoding validates every field and every protocol bound before writing, and writ
 `Bedwire\Nbt` reads and writes [pocketmine/nbt](https://github.com/pmmp/NBT) `TreeRoot` and `Tag` objects directly.
 
 - **Formats:** `JAVA`, `BEDROCK` and `NETWORK`.
-- **Calls:** `read`, `readAt` (also returns the end offset), `readHeadless`, `readMultiple`, `write`, `writeHeadless`, `writeMultiple`, `transcode` (one encoding to another without building PHP objects), and `length` (validates and measures a document without building anything).
+- **Calls:** `read`, `readAt` (also returns the end offset), `readHeadless`, `readHeadlessAt` (also returns the end offset), `readMultiple`, `write`, `writeHeadless`, `writeMultiple`, `transcode` (one encoding to another without building PHP objects), and `length` (validates and measures a document without building anything).
 - **PocketMine semantics:**
   - Strings are raw bytes up to 32767 long.
   - For duplicate names, the first value wins.
