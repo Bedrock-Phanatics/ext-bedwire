@@ -29,34 +29,21 @@ ext-bedwire replaces each of those with one native pipeline and keeps the PHP-fa
 | `LittleEndianNbtSerializer`, `BigEndianNbtSerializer`, `NetworkNbtSerializer` | `Bedwire\Nbt::read/readAt/readHeadless/readMultiple/write/writeHeadless/writeMultiple` with `BEDROCK`, `JAVA` or `NETWORK`. They take and return the same `TreeRoot` and `Tag` objects |
 | `CacheableNbt`, forwarding tile NBT unchanged | `Nbt::transcode()` converts encodings without building objects. `Nbt::length()` validates and measures |
 
-## Keeping packet classes and plugins working
+## Packets in Quark
 
-The 258 files under `src/` that use `pocketmine\network\mcpe\protocol` mostly build packets to send: sounds, particles, entities, and so on. Two paths are realistic.
+Quark uses field arrays end to end. BedrockProtocol is still a dependency for game constants and a few value objects (`ItemStack`, `SkinData`, `AbilitiesData`), but none of its packet classes encode or decode anything.
 
-1. **Thin adapter first.** Keep the packet classes as plain data holders. Their `decodePayload` and `encodePayload` become:
+- `build/codegen/protocol-packets.php` reads `Protocol::schema()` and generates `Packets`: a PHPStan type alias for every packet and protocol type, a factory per packet, the serverbound handler map and `SCHEMA_HASH`. A unit test fails when the loaded extension's schema no longer matches the generated file.
+- `quark\network\mcpe\protocol\Packet` wraps one packet. It keeps whichever form it has, fields or encoded bytes, and produces the other only when asked, so a received packet nobody reads is never decoded, and a packet broadcast to many sessions is encoded once.
+- Handlers take the field array: `handleText(array $packet)`, typed with `@phpstan-param TextFields $packet`. `PacketHandlerInspector` maps them to packet IDs, and packets without a handler are dropped before decoding, as before.
+- `DataPacketReceiveEvent` and `DataPacketSendEvent` carry `Packet` objects. A plugin that replaces received fields gets them re-encoded and decoded, so handlers only ever see values a client could have sent.
+- Received packets decode with a value budget (`Protocol::decode($bytes, 65536)`), so a small packet cannot expand into a huge array. Collection limits from the schema are enforced by the decoder, and Quark's stricter ones (50 transaction actions, 80 item stack requests, 60 actions per request) by the handlers, before any part of the packet is applied.
+- A session's queued packets are encoded together with one `Protocol::encodeBatch()` call when it flushes.
+- `Fields` converts between field arrays and Quark's vectors, item stacks, skins and abilities. `EntityMetadata` replaces `EntityMetadataCollection` with the same API.
 
-   ```php
-   protected function decodePayload(ByteBufferReader $in): void {
-       $this->fill(Protocol::decode($in->getData()));
-   }
-   ```
+Field names follow protocol-zig and the protocol docs in snake_case, not BedrockProtocol's camelCase. The generated [packet reference](packets.md) lists them.
 
-   Here `fill()` copies fields by name. Keep `encode` the same way, building the field array from the properties.
-
-   With this, `PacketPool`, `DataPacketReceiveEvent`, `DataPacketSendEvent` and every `handleXxx` keep working, while serialization is native. This is the lowest-risk first step, but each packet still crosses the boundary twice: bytes to array, then array to properties.
-
-2. **Arrays end to end.** Handlers and events take the field array directly:
-
-   ```php
-   handleText(array $packet)
-   new DataPacketReceiveEvent($session, PacketId::TEXT, $fields)
-   ```
-
-   Plugins read and modify the same arrays and encoding happens once in `sendPackets()`. The generated [packet reference](packets.md) replaces the per-class docblocks. This removes the PHP protocol library entirely.
-
-Field names follow protocol-zig and the protocol docs in snake_case, not BedrockProtocol's camelCase. A one-time map is needed for path 1; path 2 uses the new names directly.
-
-`DataPacketDecodeEvent`, which lets plugins skip decoding, maps onto `Protocol::packetId()`: decide on the ID before calling `decode()`. Unhandled packets are then never decoded, which is what `PacketHandlerInspector` does today.
+`DataPacketDecodeEvent`, which lets plugins skip decoding, runs on the packet ID before anything is decoded.
 
 ## Session lifecycle with the server
 
@@ -86,7 +73,7 @@ To refuse a player, send a `disconnect` packet and call `Server::disconnect()`. 
   - `ProcessLoginTask` and its variants, `AuthKeyProvider`, `FetchAuthKeysTask`, `JwtUtils` (keep it for offline mode only);
   - ext-crypto, if it is not used elsewhere.
 - Compression: `src/network/mcpe/compression/*` and `CompressBatchTask`.
-- Protocol: `axolotl-pm/bedrock-protocol`, after path 2. With path 1, keep its classes as data holders only.
+- Protocol: packet serialization in `axolotl-pm/bedrock-protocol` is no longer used. Its constants, item and skin value objects are, so the package stays until those have their own home.
 - NBT: `pocketmine/nbt` serializers can delegate to `Bedwire\Nbt`. Keep the tag classes, since the extension builds those objects.
 
 ## Not covered yet
