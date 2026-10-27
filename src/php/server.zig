@@ -112,16 +112,21 @@ const Server = struct {
         if (packets.len() > native.max_packets_per_batch) return exception.argumentValueError(2, "has more than 1024 packets", .{});
         const arena = scratch.begin();
         defer scratch.end(arena);
-        const encoded = try arena.allocator().alloc(protocol_php.Encoded, packets.len());
-        var total: usize = 0;
+        const allocator = arena.allocator();
+        const ends = try allocator.alloc(usize, packets.len());
+        var bytes: std.ArrayList(u8) = .empty;
         var values = packets.fastValueIterator();
-        for (encoded) |*item| {
+        for (ends) |*end| {
             const pair = try protocol_php.pairOf(deref(values.next().?), 2);
-            item.* = try protocol_php.prepare(arena.allocator(), try protocol_php.resolveZval(pair.ref, 2), pair.fields, pair.sender, pair.target, 2);
-            total += item.size;
+            try protocol_php.append(allocator, &bytes, try protocol_php.resolveZval(pair.ref, 2), pair.fields, pair.sender, pair.target, 2);
+            end.* = bytes.items.len;
         }
-        var batch = host.beginSend(@bitCast(session), encoded.len, total) catch |err| return queued(err);
-        for (encoded) |item| item.write(batch.packet(item.size));
+        var batch = host.beginSend(@bitCast(session), ends.len, bytes.items.len) catch |err| return queued(err);
+        var start: usize = 0;
+        for (ends) |end| {
+            @memcpy(batch.packet(end - start), bytes.items[start..end]);
+            start = end;
+        }
         host.commitSend(batch);
         return true;
     }

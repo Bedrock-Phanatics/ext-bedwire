@@ -112,7 +112,9 @@ pub const Protocol = struct {
     pub fn encodeBatch(packets: *zend.Array) !*zend.String {
         const arena = scratch.begin();
         defer scratch.end(arena);
-        const items = try arena.allocator().alloc(BatchItem, packets.len());
+        const allocator = arena.allocator();
+        const items = try allocator.alloc(BatchItem, packets.len());
+        var typed: std.ArrayList(u8) = .empty;
         var total: usize = 0;
         var values = packets.fastValueIterator();
         for (items) |*item| {
@@ -123,26 +125,21 @@ pub const Protocol = struct {
                 item.* = .{ .encoded = bytes };
             } else {
                 const pair = try pairOf(value, 1);
-                item.* = .{ .typed = try prepare(arena.allocator(), try resolveZval(pair.ref, 1), pair.fields, pair.sender, pair.target, 1) };
+                const start = typed.items.len;
+                try append(allocator, &typed, try resolveZval(pair.ref, 1), pair.fields, pair.sender, pair.target, 1);
+                item.* = .{ .typed = .{ .start = start, .end = typed.items.len } };
             }
-            const size = item.size();
+            const size = item.bytes(typed.items).len;
             total += lengthSize(size) + size;
         }
         const out = zend.String.alloc(total, false);
-        const bytes = out.mutableSlice();
-        var cursor: usize = 0;
+        var writer = protocol.Writer.init(out.mutableSlice());
         for (items) |item| {
-            const size = item.size();
-            var length = protocol.Writer.init(bytes[cursor..total]);
-            length.writeVarU32(@intCast(size)) catch unreachable;
-            cursor += length.cursor;
-            switch (item) {
-                .encoded => |encoded| @memcpy(bytes[cursor..][0..size], encoded),
-                .typed => |encoded| encoded.write(bytes[cursor..total]),
-            }
-            cursor += size;
+            const bytes = item.bytes(typed.items);
+            writer.writeVarU32(@intCast(bytes.len)) catch unreachable;
+            writer.writeRaw(bytes) catch unreachable;
         }
-        std.debug.assert(cursor == total);
+        std.debug.assert(writer.cursor == total);
         return out;
     }
 
@@ -154,12 +151,12 @@ pub const Protocol = struct {
 
 const BatchItem = union(enum) {
     encoded: []const u8,
-    typed: Encoded,
+    typed: struct { start: usize, end: usize },
 
-    fn size(self: BatchItem) usize {
+    fn bytes(self: BatchItem, typed: []const u8) []const u8 {
         return switch (self) {
-            .encoded => |bytes| bytes.len,
-            .typed => |encoded| encoded.size,
+            .encoded => |encoded| encoded,
+            .typed => |range| typed[range.start..range.end],
         };
     }
 };
@@ -203,9 +200,16 @@ fn subClient(raw: ?*c.zval, arg: u32) !u2 {
     return std.math.cast(u2, Zval.raw.asUnchecked(value, .int)) orelse exception.argumentValueError(arg, "must use sub-client IDs between 0 and 3", .{});
 }
 
+const kinds_by_id: [1 << 10]?Kind = blk: {
+    @setEvalBranchQuota(100_000);
+    var table: [1 << 10]?Kind = @splat(null);
+    for (std.enums.values(Kind)) |kind| table[protocol.registry.packetId(kind).?] = kind;
+    break :blk table;
+};
+
 fn kindOf(packet_id: i64) ?Kind {
     const value = std.math.cast(u10, packet_id) orelse return null;
-    return protocol.registry.packetKind(value);
+    return kinds_by_id[value];
 }
 
 fn resolve(ref: PacketRef, arg: u32) !Kind {
@@ -245,43 +249,52 @@ fn malformed(err: anyerror) exception.Error {
     return exception.throwExceptionEx(@import("../root.zig").PacketExceptionClass.entry, 0, "malformed packet: %s", .{@errorName(err).ptr});
 }
 
-/// A converted packet whose exact encoded size is known, ready to be written.
-pub const Encoded = struct {
-    header: protocol.packet.Header,
-    value: packet.Packet,
-    size: usize,
+const spare_bytes = 512;
 
-    pub fn write(self: Encoded, out: []u8) void {
-        var writer = protocol.Writer.init(out[0..self.size]);
-        writer.writeVarU32(self.header.toWire()) catch unreachable;
-        protocol.version.encodePayload(&writer, self.value) catch unreachable;
+/// Appends a packet's header and payload to `out`, converting `fields` straight into that packet's type.
+pub fn append(arena: std.mem.Allocator, out: *std.ArrayList(u8), kind: Kind, fields: *c.zval, sender: u2, target: u2, arg: u32) !void {
+    switch (kind) {
+        inline else => |tag| {
+            var encoder: packet.Encoder = .{ .arena = arena };
+            const value = encoder.convert(@FieldType(packet.Packet, @tagName(tag)), fields) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                var buffer: [512]u8 = undefined;
+                return exception.argumentValueError(arg, "%s", .{encoder.describe(&buffer).ptr});
+            };
+            const header: protocol.packet.Header = .{ .packet_id = comptime protocol.registry.packetId(tag).?, .sender_subclient = sender, .target_subclient = target };
+            try out.ensureUnusedCapacity(arena, spare_bytes);
+            var writer = protocol.Writer.init(out.unusedCapacitySlice());
+            if (emit(&writer, header, &value)) {
+                out.items.len += writer.cursor;
+                return;
+            } else |err| if (err != error.NoSpaceLeft) return boundError(arg, tag);
+
+            var counter: protocol.CountingWriter = .{};
+            emit(&counter, header, &value) catch return boundError(arg, tag);
+            try out.ensureUnusedCapacity(arena, counter.cursor);
+            writer = protocol.Writer.init(out.unusedCapacitySlice()[0..counter.cursor]);
+            emit(&writer, header, &value) catch unreachable;
+            out.items.len += writer.cursor;
+        },
     }
-};
-
-/// Converts `fields` with `arena` holding any lists; strings stay borrowed from PHP.
-pub fn prepare(arena: std.mem.Allocator, kind: Kind, fields: *c.zval, sender: u2, target: u2, arg: u32) !Encoded {
-    var encoder: packet.Encoder = .{ .arena = arena };
-    const value: packet.Packet = switch (kind) {
-        inline else => |tag| @unionInit(packet.Packet, @tagName(tag), encoder.convert(@FieldType(packet.Packet, @tagName(tag)), fields) catch |err| {
-            if (err == error.OutOfMemory) return error.OutOfMemory;
-            var buffer: [512]u8 = undefined;
-            return exception.argumentValueError(arg, "%s", .{encoder.describe(&buffer).ptr});
-        }),
-    };
-    const header: protocol.packet.Header = .{ .packet_id = protocol.registry.packetId(kind).?, .sender_subclient = sender, .target_subclient = target };
-    var counter: protocol.CountingWriter = .{};
-    counter.writeVarU32(header.toWire()) catch unreachable;
-    protocol.version.encodePayload(&counter, value) catch return exception.argumentValueError(arg, "violates a protocol bound of %s", .{@tagName(kind).ptr});
-    return .{ .header = header, .value = value, .size = counter.cursor };
 }
 
-/// Encodes into a PHP string sized exactly from a counting pass.
+fn emit(writer: anytype, header: protocol.packet.Header, value: anytype) !void {
+    try writer.writeVarU32(header.toWire());
+    try value.encode(writer);
+}
+
+fn boundError(arg: u32, comptime kind: Kind) exception.Error {
+    return exception.argumentValueError(arg, "violates a protocol bound of %s", .{@tagName(kind).ptr});
+}
+
 pub fn encodeValue(kind: Kind, fields: *c.zval, sender: u2, target: u2, arg: u32) !*zend.String {
     const arena = scratch.begin();
     defer scratch.end(arena);
-    const encoded = try prepare(arena.allocator(), kind, fields, sender, target, arg);
-    const out = zend.String.alloc(encoded.size, false);
-    encoded.write(out.mutableSlice());
+    var bytes: std.ArrayList(u8) = .empty;
+    try append(arena.allocator(), &bytes, kind, fields, sender, target, arg);
+    const out = zend.String.alloc(bytes.items.len, false);
+    @memcpy(out.mutableSlice(), bytes.items);
     return out;
 }
 
