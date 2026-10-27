@@ -44,6 +44,9 @@ var_dump(Protocol::encode(PacketId::MOVE_ACTOR_ABSOLUTE, new Move(7, 1, new Plac
 var_dump(Protocol::encode(PacketId::MOVE_ACTOR_ABSOLUTE, $fields) === $bytes);
 var_dump(Protocol::encodeBatch([[PacketId::MOVE_ACTOR_ABSOLUTE, $move], [PacketId::SET_TIME, new Time(9)]]) === Protocol::encodeBatch([$bytes, $time]));
 var_dump(Protocol::decodeMany([$time])[0] == new Time(9));
+var_dump(Protocol::encodeBatch([$move, new Time(9), $time]) === Protocol::encodeBatch([$bytes, $time, $time]));
+var_dump(Protocol::encodeMany([$move, new Time(9)]) === [$bytes, $time]);
+attempt(fn() => Protocol::encodeBatch([new Vec(0, 0, 0)]));
 
 attempt(fn() => Protocol::encode(PacketId::SET_TIME, new Move(7, 1, new Vec(0, 0, 0))));
 attempt(fn() => Protocol::encode(PacketId::SET_TIME, (new ReflectionClass(Time::class))->newInstanceWithoutConstructor()));
@@ -57,6 +60,7 @@ attempt(fn() => Protocol::bind(["set_time" => Abstracted::class]));
 attempt(fn() => Protocol::bind(["set_time" => "Missing"]));
 attempt(fn() => Protocol::bind(["no_such_packet" => Time::class]));
 attempt(fn() => Protocol::bind(["move_actor_absolute" => Move::class]));
+attempt(fn() => Protocol::bind(["set_time" => Time::class, "set_difficulty" => Time::class]));
 var_dump(Protocol::decode($time) instanceof Time);
 
 Protocol::bind([]);
@@ -72,6 +76,9 @@ bool(true)
 bool(true)
 bool(true)
 bool(true)
+bool(true)
+bool(true)
+TypeError: Bedwire\Protocol::encodeBatch(): Argument #1 ($packets) must contain [packet, fields] pairs or bound packet objects
 ValueError: Bedwire\Protocol::encode(): Argument #2 ($fields) value is an object of the wrong class, Move given
 ValueError: Bedwire\Protocol::encode(): Argument #2 ($fields) time is not initialized
 ValueError: Bedwire\Protocol::encode(): Argument #2 ($fields) value must not be a lazy object
@@ -83,5 +90,6 @@ ValueError: Bedwire\Protocol::bind(): Argument #1 ($types) binds set_time to Abs
 ValueError: Bedwire\Protocol::bind(): Argument #1 ($types) binds set_time to an unknown class
 ValueError: Bedwire\Protocol::bind(): Argument #1 ($types) names an unknown struct or packet no_such_packet
 ValueError: Bedwire\Protocol::bind(): Argument #1 ($types) binds MoveActorAbsoluteData to Move, whose property position does not accept an array or its bound class
+ValueError: Bedwire\Protocol::bind(): Argument #1 ($types) binds two packets to one class
 bool(true)
 bool(true)

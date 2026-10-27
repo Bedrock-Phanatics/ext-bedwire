@@ -117,8 +117,8 @@ const Server = struct {
         var bytes: std.ArrayList(u8) = .empty;
         var values = packets.fastValueIterator();
         for (ends) |*end| {
-            const pair = try protocol_php.pairOf(deref(values.next().?), 2);
-            try protocol_php.append(allocator, &bytes, try protocol_php.resolveZval(pair.ref, 2), pair.fields, pair.sender, pair.target, 2);
+            const item = try protocol_php.itemOf(deref(values.next().?), 2);
+            try protocol_php.append(allocator, &bytes, item.kind, item.fields, item.sender, item.target, 2);
             end.* = bytes.items.len;
         }
         var batch = host.beginSend(@bitCast(session), ends.len, bytes.items.len) catch |err| return queued(err);

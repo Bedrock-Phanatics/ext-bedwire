@@ -2,6 +2,7 @@ const std = @import("std");
 const phpz = @import("phpz");
 const native = @import("native");
 const packet = @import("packet.zig");
+const binding = @import("binding.zig");
 const scratch = @import("scratch.zig");
 
 const protocol = native.protocol;
@@ -69,7 +70,7 @@ pub const Protocol = struct {
     /// Decodes the named structs and packets into objects of the given classes from now on, and encodes them from
     /// those objects. Each call replaces the previous bindings of this thread.
     pub fn bind(types: *zend.Array) !void {
-        return @import("binding.zig").bind(types);
+        return binding.bind(types);
     }
 
     /// Decodes a list of packets in one call, with null for IDs this protocol does not define.
@@ -111,9 +112,8 @@ pub const Protocol = struct {
         errdefer list.finish().release();
         var values = packets.fastValueIterator();
         while (values.next()) |raw| {
-            const pair = try pairOf(deref(raw), 1);
-            const kind = try resolveZval(pair.ref, 1);
-            list.append(.str, try encodeValue(kind, pair.fields, pair.sender, pair.target, 1));
+            const item = try itemOf(deref(raw), 1);
+            list.append(.str, try encodeValue(item.kind, item.fields, item.sender, item.target, 1));
         }
         return list.finish();
     }
@@ -134,9 +134,9 @@ pub const Protocol = struct {
                 if (bytes.len == 0) return exception.argumentValueError(1, "must not contain empty packets", .{});
                 item.* = .{ .encoded = bytes };
             } else {
-                const pair = try pairOf(value, 1);
+                const entry = try itemOf(value, 1);
                 const start = typed.items.len;
-                try append(allocator, &typed, try resolveZval(pair.ref, 1), pair.fields, pair.sender, pair.target, 1);
+                try append(allocator, &typed, entry.kind, entry.fields, entry.sender, entry.target, 1);
                 item.* = .{ .typed = .{ .start = start, .end = typed.items.len } };
             }
             const size = item.bytes(typed.items).len;
@@ -184,6 +184,18 @@ fn valueLimit(max_values: ?i64, arg: u32) !usize {
 }
 
 pub const Pair = struct { ref: *c.zval, fields: *c.zval, sender: u2 = 0, target: u2 = 0 };
+
+pub const Item = struct { kind: Kind, fields: *c.zval, sender: u2 = 0, target: u2 = 0 };
+
+/// Reads a bound packet object, or a `[packet, fields]` pair optionally followed by the sender and target sub-client IDs.
+pub fn itemOf(value: *c.zval, arg: u32) !Item {
+    if (Zval.raw.is(value, .object)) {
+        const kind = binding.packetKindOf(value.value.obj.*.ce) orelse return exception.argumentTypeError(arg, "must contain [packet, fields] pairs or bound packet objects", .{});
+        return .{ .kind = kind, .fields = value };
+    }
+    const pair = try pairOf(value, arg);
+    return .{ .kind = try resolveZval(pair.ref, arg), .fields = pair.fields, .sender = pair.sender, .target = pair.target };
+}
 
 /// Reads `[packet, fields]`, optionally followed by the sender and target sub-client IDs.
 pub fn pairOf(value: *c.zval, arg: u32) !Pair {

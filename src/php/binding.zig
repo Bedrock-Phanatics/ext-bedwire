@@ -73,7 +73,46 @@ const Table = struct {
     flat: [bindable.len]bool = @splat(false),
     plain: [bindable.len]bool = @splat(false),
     offsets: [total_fields]u32 = undefined,
+    kinds: [kind_slots]KindSlot = @splat(.{}),
+
+    fn insertKind(self: *Table, ce: *c.zend_class_entry, kind: Kind) bool {
+        var i = kindSlot(ce);
+        while (self.kinds[i].ce) |taken| : (i = (i + 1) % kind_slots) {
+            if (taken == ce) return false;
+        }
+        self.kinds[i] = .{ .ce = ce, .kind = kind };
+        return true;
+    }
 };
+
+const packet_count = @typeInfo(Kind).@"enum".field_names.len;
+const kind_slots = 1024;
+
+comptime {
+    std.debug.assert(kind_slots >= packet_count * 2);
+}
+
+const KindSlot = struct { ce: ?*c.zend_class_entry = null, kind: Kind = undefined };
+
+const packet_kinds: [packet_count]Kind = blk: {
+    var out: [packet_count]Kind = undefined;
+    for (@typeInfo(Kind).@"enum".field_names, &out) |name, *kind| kind.* = @field(Kind, name);
+    break :blk out;
+};
+
+fn kindSlot(ce: *c.zend_class_entry) usize {
+    return @intCast((@as(u64, @intFromPtr(ce)) >> 4) *% 0x9E3779B97F4A7C15 >> 54);
+}
+
+/// The packet a bound class stands for, so packet objects can be encoded without naming their packet.
+pub fn packetKindOf(ce: *c.zend_class_entry) ?Kind {
+    const bound = table orelse return null;
+    var i = kindSlot(ce);
+    while (bound.kinds[i].ce) |taken| : (i = (i + 1) % kind_slots) {
+        if (taken == ce) return bound.kinds[i].kind;
+    }
+    return null;
+}
 
 /// Classes live as long as the request that bound them, so every thread keeps its own table.
 threadlocal var table: ?*Table = null;
@@ -136,6 +175,11 @@ pub fn bind(types: *zend.Array) !void {
             next.classes[i] = null;
             next.flat[i] = true;
         }
+    }
+
+    for (0..packet_count) |i| {
+        const ce = next.classes[i] orelse if (next.flat[i]) next.classes[flat_targets[i].?].? else continue;
+        if (!next.insertKind(ce, packet_kinds[i])) return exception.argumentValueError(1, "binds two packets to one class", .{});
     }
 
     inline for (bindable, 0..) |entry, i| {
