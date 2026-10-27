@@ -46,6 +46,7 @@ fn startup() !void {
 
 fn finishRequest() !void {
     @import("php/scratch.zig").release();
+    @import("php/binding.zig").release();
 }
 
 fn upper(comptime name: []const u8) [:0]const u8 {

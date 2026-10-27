@@ -58,11 +58,18 @@ pub const Protocol = struct {
         return (try readHeader(bytes)).packet_id;
     }
 
-    pub fn decode(bytes: []const u8, max_values: ?i64) !?*zend.Array {
+    pub fn decode(bytes: []const u8, max_values: ?i64) !?phpz.Mixed(&.{ .array, .object }) {
         const limit = try valueLimit(max_values, 2);
         var out: c.zval = undefined;
         if (!try decodeInto(bytes, &out, limit)) return null;
-        return Zval.raw.asUnchecked(&out, .array);
+        if (Zval.raw.is(&out, .object)) return .{ .object = Zval.raw.asUnchecked(&out, .object) };
+        return .{ .array = Zval.raw.asUnchecked(&out, .array) };
+    }
+
+    /// Decodes the named structs and packets into objects of the given classes from now on, and encodes them from
+    /// those objects. Each call replaces the previous bindings of this thread.
+    pub fn bind(types: *zend.Array) !void {
+        return @import("binding.zig").bind(types);
     }
 
     /// Decodes a list of packets in one call, with null for IDs this protocol does not define.
@@ -87,11 +94,14 @@ pub const Protocol = struct {
         return list.finish();
     }
 
-    pub fn encode(ref: PacketRef, fields: *zend.Array, sender_subclient: ?i64, target_subclient: ?i64) !*zend.String {
+    pub fn encode(ref: PacketRef, fields: phpz.Mixed(&.{ .array, .object }), sender_subclient: ?i64, target_subclient: ?i64) !*zend.String {
         const kind = try resolve(ref, 1);
         const sender = std.math.cast(u2, sender_subclient orelse 0) orelse return exception.argumentValueError(3, "must be between 0 and 3", .{});
         const target = std.math.cast(u2, target_subclient orelse 0) orelse return exception.argumentValueError(4, "must be between 0 and 3", .{});
-        var zv = Zval.raw.init(.array, fields);
+        var zv = switch (fields) {
+            .array => |array| Zval.raw.init(.array, array),
+            .object => |object| Zval.raw.init(.object, object),
+        };
         return encodeValue(kind, &zv, sender, target, 2);
     }
 

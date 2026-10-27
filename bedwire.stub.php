@@ -86,17 +86,19 @@ namespace Bedwire {
 
         public static function packetId(string $bytes): int {}
 
-        public static function decode(string $bytes, int $maxValues = 0): ?array {}
+        public static function decode(string $bytes, int $maxValues = 0): array|object|null {}
 
         public static function decodeMany(array $packets, int $maxValues = 0): array {}
 
-        public static function encode(int|string $packet, array $fields, int $senderSubClient = 0, int $targetSubClient = 0): string {}
+        public static function encode(int|string $packet, array|object $fields, int $senderSubClient = 0, int $targetSubClient = 0): string {}
 
         public static function encodeMany(array $packets): array {}
 
         public static function encodeBatch(array $packets): string {}
 
         public static function schema(): array {}
+
+        public static function bind(array $types): void {}
     }
 
     /** @not-serializable */

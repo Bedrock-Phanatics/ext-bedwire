@@ -170,6 +170,7 @@ $server->stop(2000);
   - `encode($packet, $fields, $sender = 0, $target = 0)` takes a packet ID or name, and preserves sub-client IDs.
   - `decodeMany()` and `encodeMany()` do the same for whole lists in one call. `encodeMany()` takes `[packet, fields]` pairs, optionally followed by the sender and target sub-client IDs.
   - `encodeBatch()` takes the same pairs mixed with already encoded packets, and returns them as one batch body for `Server::sendRawBatch()`.
+  - `bind()` maps schema names, packet names or struct names, to PHP classes. Bound structs then decode into objects of those classes and encode from them, with each field read and written through its property slot under its camelCase name. A packet whose only field is a struct is flattened into its class unless that struct is bound itself. Every class is checked first: it must be a plain instantiable class whose properties are declared, not hooked, and typed to accept what is written to them. Bindings last for the request and each thread has its own.
 - **Schema:** `schema()` lists every packet with its ID, direction and fields, and every struct, union and enum they reach, under stable unique names. Code generators use it to build typed wrappers from the types the extension itself walks.
 - **Constants:** `Protocol::VERSION` and `Protocol::MINECRAFT_VERSION`. `Bedwire\PacketId::<NAME>` has one constant per packet, registered at startup from protocol-zig.
 
@@ -177,7 +178,7 @@ The field layout of every packet is listed in [docs/packets.md](docs/packets.md)
 
 How values are represented:
 
-- Structs are arrays keyed by field name.
+- Structs are arrays keyed by field name, or objects of their bound class.
 - A union is an array with exactly one key naming its variant.
 - Lists are PHP lists, and enums are ints.
 - Optional fields may be `null` or left out.

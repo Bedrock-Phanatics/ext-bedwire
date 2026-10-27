@@ -12,7 +12,7 @@ const Zval = phpz.Zval;
 const Packet = packet.Packet;
 const Kind = packet.Kind;
 
-const Named = struct { T: type, name: []const u8 };
+pub const Named = struct { T: type, name: []const u8 };
 
 fn isList(comptime T: type) bool {
     return @typeInfo(T) == .@"struct" and @hasDecl(T, "Element") and @hasDecl(T, "iterator");
@@ -96,7 +96,7 @@ fn add(comptime T: type, comptime hint: []const u8, comptime seen: *[]const Name
 }
 
 /// Every reachable struct, union and enum under a unique name. Types sharing a name are prefixed with their module.
-const named: []const Named = blk: {
+pub const named: []const Named = blk: {
     @setEvalBranchQuota(100_000_000);
     var out: []const Named = &.{};
     for (found) |entry| {

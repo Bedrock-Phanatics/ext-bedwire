@@ -2,6 +2,7 @@
 const std = @import("std");
 const phpz = @import("phpz");
 const protocol = @import("native").protocol;
+const binding = @import("binding.zig");
 
 const c = phpz.c;
 const zend = phpz.zend;
@@ -83,7 +84,7 @@ pub fn kindByName(name: []const u8) ?Kind {
     return std.meta.stringToEnum(Kind, name);
 }
 
-pub const DecodeError = protocol.DecodeError || error{TooManyValues};
+pub const DecodeError = protocol.DecodeError || error{ TooManyValues, ObjectUnavailable };
 
 /// PHP values the current conversion may still create, so a small packet cannot expand into a huge array tree.
 threadlocal var remaining: usize = std.math.maxInt(usize);
@@ -134,7 +135,11 @@ pub fn toZval(comptime T: type, value: T, out: *c.zval) DecodeError!void {
                 while (items.next() catch |err| return discard(&list, err)) |item| try appendTo(T.Element, item, &list);
                 return Zval.raw.set(out, .array, list.finish());
             }
+            if (comptime binding.FlatInner(T)) |Inner| {
+                if (binding.isFlat(T)) return toZval(Inner, @field(value, info.field_names[0]), out);
+            }
             try spend(info.field_names.len);
+            if (binding.classOf(T)) |class| return toObject(T, value, class, out);
             const array = zend.Array.init(info.field_names.len);
             errdefer array.release();
             inline for (info.field_names, info.field_types, 0..) |name, F, i| {
@@ -157,6 +162,33 @@ pub fn toZval(comptime T: type, value: T, out: *c.zval) DecodeError!void {
             },
         },
         else => @compileError("unsupported type " ++ @typeName(T)),
+    }
+}
+
+fn toObject(comptime T: type, value: T, class: binding.Class, out: *c.zval) DecodeError!void {
+    const info = @typeInfo(T).@"struct";
+    const obj: *c.zend_object = if (class.plain) blk: {
+        const obj = c.zend_objects_new(class.ce);
+        inline for (0..info.field_names.len) |i| class.slot(obj, i).* = Zval.raw.undef;
+        out.value.obj = obj;
+        out.u1.type_info = c.IS_OBJECT_EX;
+        break :blk obj;
+    } else blk: {
+        if (c.object_init_ex(out, class.ce) != c.SUCCESS) return error.ObjectUnavailable;
+        break :blk out.value.obj;
+    };
+    inline for (info.field_names, info.field_types, 0..) |name, F, i| {
+        const slot = class.slot(obj, i);
+        if (!class.plain) {
+            c.zval_ptr_dtor(slot);
+            slot.* = Zval.raw.undef;
+        }
+        toZval(F, @field(value, name), slot) catch |err| {
+            c.zend_object_release(obj);
+            out.* = Zval.raw.undef;
+            return err;
+        };
+        slot.u2.extra = 0;
     }
 }
 
@@ -275,6 +307,14 @@ pub const Encoder = struct {
             .@"struct" => |info| {
                 if (comptime isBitset(T)) return self.bitset(T, zv);
                 if (comptime isList(T)) return T.init(try self.items(T.Element, zv));
+                if (comptime binding.FlatInner(T)) |Inner| {
+                    if (binding.isFlat(T) and Zval.raw.is(zv, .object)) {
+                        var result: T = undefined;
+                        @field(result, info.field_names[0]) = try self.convert(Inner, zv);
+                        return result;
+                    }
+                }
+                if (Zval.raw.is(zv, .object)) return self.fromObject(T, zv);
                 if (!Zval.raw.is(zv, .array)) return self.fail("must be of type array", zv);
                 const table = Zval.raw.asUnchecked(zv, .array).ptr();
                 var result: T = undefined;
@@ -316,6 +356,28 @@ pub const Encoder = struct {
             },
             else => @compileError("unsupported type " ++ @typeName(T)),
         }
+    }
+
+    fn fromObject(self: *Encoder, comptime T: type, zv: *c.zval) Error!T {
+        const class = binding.classOf(T) orelse return self.fail("must be of type array", zv);
+        const obj = zv.value.obj;
+        if (!c.instanceof_function(obj.*.ce, class.ce)) return self.fail("is an object of the wrong class", zv);
+        if (obj.*.extra_flags & (c.IS_OBJ_LAZY_UNINITIALIZED | c.IS_OBJ_LAZY_PROXY) != 0) return self.fail("must not be a lazy object", null);
+        const info = @typeInfo(T).@"struct";
+        var result: T = undefined;
+        inline for (info.field_names, info.field_types, info.field_attrs, 0..) |name, F, attrs, i| {
+            self.push(.{ .name = name });
+            const slot = class.slot(obj, i);
+            if (!Zval.raw.is(slot, .undef)) {
+                @field(result, name) = try self.convert(F, slot);
+            } else if (@typeInfo(F) == .optional) {
+                @field(result, name) = null;
+            } else if (comptime attrs.defaultValue(F)) |default| {
+                @field(result, name) = default;
+            } else return self.fail("is not initialized", null);
+            self.pop();
+        }
+        return result;
     }
 
     fn items(self: *Encoder, comptime T: type, zv: *c.zval) Error![]const T {
