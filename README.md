@@ -112,7 +112,7 @@ function onPacket(int $session, string $bytes): void {
     }
 }
 
-// Encode and queue in one call. No intermediate PHP strings are created.
+// Encode and queue in one call, next to packets that are already encoded. No intermediate PHP strings are created.
 $server->sendPackets($session, [
     ["play_status", ["status" => 0]],
     ["text", ["localize" => false, "body" => ["message_only" => ["message_type" => 0, "message" => "hi"]], "senders_xuid" => "", "platform_id" => ""]],

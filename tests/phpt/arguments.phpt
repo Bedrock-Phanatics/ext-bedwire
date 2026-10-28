@@ -36,6 +36,7 @@ attempt(fn() => $server->send(1, str_repeat("a", 5 * 1024 * 1024)));
 attempt(fn() => $server->sendPackets(1, [["text"]]));
 attempt(fn() => $server->sendPackets(1, [["no_such_packet", []]]));
 attempt(fn() => $server->sendPackets(1, [["text", ["localize" => "yes"]]]));
+attempt(fn() => $server->sendPackets(1, [""]));
 attempt(fn() => $server->sendRawBatch(1, "	"));
 attempt(fn() => $server->sendRawBatch(1, ""));
 attempt(fn() => $server->sendRawBatch(1, "	", 3));
@@ -72,6 +73,7 @@ ValueError: Bedwire\Server::send(): Argument #2 ($packet) exceeds the maximum ba
 TypeError: Bedwire\Server::sendPackets(): Argument #2 ($packets) must contain [packet, fields] pairs
 ValueError: Bedwire\Server::sendPackets(): Argument #2 ($packets) must use known packet names
 ValueError: Bedwire\Server::sendPackets(): Argument #2 ($packets) localize must be of type bool, string given
+ValueError: Bedwire\Server::sendPackets(): Argument #2 ($packets) must not contain empty packets
 ValueError: Bedwire\Server::sendRawBatch(): Argument #2 ($batch) is not a batch of varint length-prefixed packets
 ValueError: Bedwire\Server::sendRawBatch(): Argument #2 ($batch) must not be empty
 ValueError: Bedwire\Server::sendRawBatch(): Argument #3 ($offset) is past the end of the batch

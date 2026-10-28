@@ -106,26 +106,36 @@ const Server = struct {
         return queued((try self.get()).send(@bitCast(session), try collect(packets, &slices, 2)));
     }
 
-    /// Encodes `[packet, fields]` pairs straight into the send queue, skipping intermediate PHP strings.
+    /// Encodes packet objects and `[packet, fields]` pairs straight into the send queue next to already encoded
+    /// packets, skipping intermediate PHP strings.
     pub fn sendPackets(self: *Server, session: i64, packets: *Array) !bool {
         const host = try self.get();
         if (packets.len() > native.max_packets_per_batch) return exception.argumentValueError(2, "has more than 1024 packets", .{});
         const arena = scratch.begin();
         defer scratch.end(arena);
         const allocator = arena.allocator();
-        const ends = try allocator.alloc(usize, packets.len());
-        var bytes: std.ArrayList(u8) = .empty;
+        const items = try allocator.alloc(protocol_php.BatchItem, packets.len());
+        var typed: std.ArrayList(u8) = .empty;
+        var total: usize = 0;
         var values = packets.fastValueIterator();
-        for (ends) |*end| {
-            const item = try protocol_php.itemOf(deref(values.next().?), 2);
-            try protocol_php.append(allocator, &bytes, item.kind, item.fields, item.sender, item.target, 2);
-            end.* = bytes.items.len;
+        for (items) |*item| {
+            const value = deref(values.next().?);
+            if (Zval.raw.is(value, .string)) {
+                const encoded = Zval.raw.asUnchecked(value, .string);
+                if (encoded.len == 0) return exception.argumentValueError(2, "must not contain empty packets", .{});
+                item.* = .{ .encoded = encoded };
+            } else {
+                const entry = try protocol_php.itemOf(value, 2);
+                const start = typed.items.len;
+                try protocol_php.append(allocator, &typed, entry.kind, entry.fields, entry.sender, entry.target, 2);
+                item.* = .{ .typed = .{ .start = start, .end = typed.items.len } };
+            }
+            total += item.bytes(typed.items).len;
         }
-        var batch = host.beginSend(@bitCast(session), ends.len, bytes.items.len) catch |err| return queued(err);
-        var start: usize = 0;
-        for (ends) |end| {
-            @memcpy(batch.packet(end - start), bytes.items[start..end]);
-            start = end;
+        var batch = host.beginSend(@bitCast(session), items.len, total) catch |err| return queued(err);
+        for (items) |item| {
+            const bytes = item.bytes(typed.items);
+            @memcpy(batch.packet(bytes.len), bytes);
         }
         host.commitSend(batch);
         return true;

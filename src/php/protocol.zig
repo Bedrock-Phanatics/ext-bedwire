@@ -159,11 +159,11 @@ pub const Protocol = struct {
     }
 };
 
-const BatchItem = union(enum) {
+pub const BatchItem = union(enum) {
     encoded: []const u8,
     typed: struct { start: usize, end: usize },
 
-    fn bytes(self: BatchItem, typed: []const u8) []const u8 {
+    pub fn bytes(self: BatchItem, typed: []const u8) []const u8 {
         return switch (self) {
             .encoded => |encoded| encoded,
             .typed => |range| typed[range.start..range.end],

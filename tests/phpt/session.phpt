@@ -44,7 +44,7 @@ while ((count($disconnects) < 3 || count($connects) < 3) && microtime(true) < $d
                     ["resource_pack_stack", ["texture_pack_required" => false, "texture_pack_list" => [], "base_game_version" => "", "experiments" => ["toggles" => [], "experiments_ever_toggled" => false], "include_editor_packs" => false]],
                 ]),
                 // StartGame only needs the player's unique and runtime IDs here.
-                2 => $server->send($session, "\x0b\x02\x01") && $server->sendPackets($session, [["play_status", ["status" => 3]]]),
+                2 => $server->sendPackets($session, ["\x0b\x02\x01", ["play_status", ["status" => 3]]]),
                 default => null,
             };
         }
