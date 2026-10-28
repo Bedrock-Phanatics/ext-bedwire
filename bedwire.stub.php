@@ -10,7 +10,12 @@ namespace Bedwire {
 
     final class BackpressureException extends Exception {}
 
-    final class PacketException extends Exception {}
+    final class PacketException extends Exception {
+        /** The schema field, such as Emote.emote_id, or decode limit, such as max_string_bytes, that rejected the packet. */
+        public ?string $field = null;
+        public ?int $observed = null;
+        public ?int $limit = null;
+    }
 
     final class NbtException extends Exception {}
 

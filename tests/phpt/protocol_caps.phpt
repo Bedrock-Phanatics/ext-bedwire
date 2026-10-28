@@ -23,8 +23,22 @@ attempt(fn() => Protocol::encode(PacketId::EMOTE, $emote(str_repeat("a", 65))));
 //the emote ID follows the packet header and the actor ID, behind its varint length of 64
 $tooLong = str_replace("\x40" . str_repeat("a", 64), "\x41" . str_repeat("a", 65), $bytes);
 attempt(fn() => Protocol::decode($tooLong));
+try{
+    Protocol::decode($tooLong);
+}catch(PacketException $e){
+    var_dump($e->field, $e->observed, $e->limit);
+}
+try{
+    Protocol::decode("\x01");
+}catch(PacketException $e){
+    var_dump($e->field);
+}
 ?>
 --EXPECT--
 bool(true)
 ValueError: Bedwire\Protocol::encode(): Argument #2 ($fields) violates a protocol bound of emote
-Bedwire\PacketException: malformed packet: InvalidValue
+Bedwire\PacketException: malformed packet: InvalidValue, Emote.emote_id is 65 over 64
+string(14) "Emote.emote_id"
+int(65)
+int(64)
+NULL

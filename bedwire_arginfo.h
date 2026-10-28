@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: 4c48b5b84fc380aa28477c39ac21888edfb4f321 */
+ * Stub hash: 057ec3847f492f16371d05276c218a15d25c3ed7 */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Bedwire_Server___construct, 0, 0, 2)
 	ZEND_ARG_TYPE_INFO(0, address, IS_STRING, 0)
@@ -312,6 +312,24 @@ static zend_class_entry *register_class_Bedwire_PacketException(zend_class_entry
 
 	INIT_NS_CLASS_ENTRY(ce, "Bedwire", "PacketException", NULL);
 	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_Bedwire_Exception, ZEND_ACC_FINAL);
+
+	zval property_field_default_value;
+	ZVAL_NULL(&property_field_default_value);
+	zend_string *property_field_name = zend_string_init("field", sizeof("field") - 1, 1);
+	zend_declare_typed_property(class_entry, property_field_name, &property_field_default_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_STRING|MAY_BE_NULL));
+	zend_string_release(property_field_name);
+
+	zval property_observed_default_value;
+	ZVAL_NULL(&property_observed_default_value);
+	zend_string *property_observed_name = zend_string_init("observed", sizeof("observed") - 1, 1);
+	zend_declare_typed_property(class_entry, property_observed_name, &property_observed_default_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG|MAY_BE_NULL));
+	zend_string_release(property_observed_name);
+
+	zval property_limit_default_value;
+	ZVAL_NULL(&property_limit_default_value);
+	zend_string *property_limit_name = zend_string_init("limit", sizeof("limit") - 1, 1);
+	zend_declare_typed_property(class_entry, property_limit_name, &property_limit_default_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG|MAY_BE_NULL));
+	zend_string_release(property_limit_name);
 
 	return class_entry;
 }

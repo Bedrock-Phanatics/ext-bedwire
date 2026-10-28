@@ -248,12 +248,14 @@ pub fn resolveZval(ref: *c.zval, arg: u32) !Kind {
 }
 
 fn readHeader(bytes: []const u8) !protocol.packet.Header {
+    protocol.failure.last = null;
     const envelope = protocol.packet.decode(bytes, limits) catch |err| return malformed(err);
     return envelope.header;
 }
 
 /// Returns false for packet IDs this protocol does not define.
 fn decodeInto(bytes: []const u8, out: *c.zval, max_values: usize) !bool {
+    protocol.failure.last = null;
     const envelope = protocol.Current.decodeBorrowed(bytes, limits) catch |err| return malformed(err);
     switch (envelope.value) {
         .unknown => return false,
@@ -268,7 +270,16 @@ fn decodeInto(bytes: []const u8, out: *c.zval, max_values: usize) !bool {
 }
 
 fn malformed(err: anyerror) exception.Error {
-    return exception.throwExceptionEx(@import("../root.zig").PacketExceptionClass.entry, 0, "malformed packet: %s", .{@errorName(err).ptr});
+    const ce = @import("../root.zig").PacketExceptionClass.entry;
+    const failure = protocol.failure.take() orelse return exception.throwExceptionEx(ce, 0, "malformed packet: %s", .{@errorName(err).ptr});
+    const observed = std.math.cast(c.zend_long, failure.observed) orelse std.math.maxInt(c.zend_long);
+    const limit = std.math.cast(c.zend_long, failure.limit) orelse std.math.maxInt(c.zend_long);
+    const field_len: c_int = @intCast(failure.field.len);
+    const obj = exception.throwExceptionObjectEx(ce, 0, "malformed packet: %s, %.*s is %lld over %lld", .{ @errorName(err).ptr, field_len, failure.field.ptr, @as(c_longlong, observed), @as(c_longlong, limit) });
+    c.zend_update_property_stringl(ce.ptr(), obj.ptr(), "field", "field".len, failure.field.ptr, failure.field.len);
+    c.zend_update_property_long(ce.ptr(), obj.ptr(), "observed", "observed".len, observed);
+    c.zend_update_property_long(ce.ptr(), obj.ptr(), "limit", "limit".len, limit);
+    return exception.pending() orelse error.PhpException;
 }
 
 const spare_bytes = 512;

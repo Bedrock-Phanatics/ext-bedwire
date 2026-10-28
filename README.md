@@ -185,7 +185,7 @@ How values are represented:
 - NBT fields hold raw network NBT.
 - Unsigned 64-bit values wrap into PHP's signed int.
 
-Encoding validates every field and every protocol bound before writing, and writes straight into a PHP string of the exact size. Decoding validates the whole packet first and rejects trailing bytes. Malformed input throws `Bedwire\PacketException` and never crashes.
+Encoding validates every field and every protocol bound before writing, and writes straight into a PHP string of the exact size. Decoding validates the whole packet first and rejects trailing bytes. Malformed input throws `Bedwire\PacketException` and never crashes. When a count or length broke a bound, its `field` (a schema field such as `Emote.emote_id`, or a decode limit such as `max_string_bytes`), `observed` and `limit` properties say which and by how much; otherwise they are null.
 
 ### NBT
 
