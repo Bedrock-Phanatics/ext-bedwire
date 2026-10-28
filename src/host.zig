@@ -172,7 +172,7 @@ pub const Delivered = union(Event) {
     connect: struct { session: u64, address: []const u8, network_id: []const u8, identity: ?[]const u8, issuer_verified: bool },
     disconnect: struct { session: u64, reason: Reason },
     packet: struct { session: u64, bytes: []const u8 },
-    login: struct { session: u64, name: []const u8, uuid: []const u8, xuid: []const u8 },
+    login: struct { session: u64, name: []const u8, uuid: []const u8, xuid: []const u8, client_key: []const u8 },
     unreliable: struct { session: u64, bytes: []const u8 },
 };
 
@@ -444,11 +444,13 @@ pub const Host = struct {
             },
             .login => blk: {
                 const name_len = std.mem.readInt(u16, bytes[8..10], .little);
+                const header = Worker.login_header;
                 break :blk .{ .login = .{
                     .session = session,
                     .uuid = bytes[10..46],
-                    .name = bytes[46..][0..name_len],
-                    .xuid = bytes[46 + name_len ..],
+                    .client_key = bytes[46..header],
+                    .name = bytes[header..][0..name_len],
+                    .xuid = bytes[header + name_len ..],
                 } };
             },
         };

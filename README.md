@@ -96,7 +96,7 @@ while ($running) {
         [$kind, $session, $data] = [$events[$i], $events[$i + 1], $events[$i + 2]];
         match ($kind) {
             Server::EVENT_CONNECT => onConnect($session, ...$data),     // [ip:port, network ID, SHA-256 of the DER identity key or null, Microsoft-verified]
-            Server::EVENT_LOGIN => onLogin($session, ...$data),         // [display name, UUID, XUID], already verified
+            Server::EVENT_LOGIN => onLogin($session, ...$data),         // [display name, UUID, XUID, client key DER], already verified
             Server::EVENT_PACKET => onPacket($session, $data),          // one encoded game packet
             Server::EVENT_DISCONNECT => onDisconnect($session, $data),  // Server::REASON_*
             Server::EVENT_UNRELIABLE => onUnreliable($session, $data),  // a raw unreliable message, with "unreliable_events"

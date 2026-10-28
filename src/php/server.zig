@@ -333,10 +333,11 @@ fn appendEvent(list: *Array.ListBuilder, event: native.Delivered) void {
         },
         .login => |login| {
             list.append(.int, @bitCast(login.session));
-            var details = Array.ListBuilder.init(3);
+            var details = Array.ListBuilder.init(4);
             details.appendAssumeCapacity(.string, login.name);
             details.appendAssumeCapacity(.string, login.uuid);
             details.appendAssumeCapacity(.string, login.xuid);
+            details.appendAssumeCapacity(.string, login.client_key);
             list.append(.array, details.finish());
         },
     }

@@ -609,6 +609,9 @@ pub const Worker = struct {
         _ = slot.session.settle();
     }
 
+    /// Session ID, name length, UUID and the client key's DER, ahead of the name and XUID.
+    pub const login_header = 46 + @sizeOf(@TypeOf(bedwire.crypto.spki.encode(undefined)));
+
     /// Verifies Microsoft-signed logins here and reports them before the Login packet. Others, such as offline
     /// or proxy logins, are left to PHP, and the session cannot pass the login stage until it calls acceptLogin.
     fn authenticate(self: *Worker, slot: *Slot, packet: bedwire.Packet) !void {
@@ -621,12 +624,14 @@ pub const Worker = struct {
         self.stats.native_logins += 1;
 
         const name = identity.display_name[0..@min(identity.display_name.len, std.math.maxInt(u16))];
-        const bytes = self.emit(.login, 46 + name.len + identity.xuid.len) orelse return error.EventQueueFull;
+        const key = bedwire.crypto.spki.encode(identity.public_key);
+        const bytes = self.emit(.login, login_header + name.len + identity.xuid.len) orelse return error.EventQueueFull;
         std.mem.writeInt(u64, bytes[0..8], self.sessionId(slot), .little);
         std.mem.writeInt(u16, bytes[8..10], @intCast(name.len), .little);
         @memcpy(bytes[10..46], identity.uuid);
-        @memcpy(bytes[46..][0..name.len], name);
-        @memcpy(bytes[46 + name.len ..], identity.xuid);
+        @memcpy(bytes[46..login_header], &key);
+        @memcpy(bytes[login_header..][0..name.len], name);
+        @memcpy(bytes[login_header + name.len ..], identity.xuid);
         self.commitEvent();
         slot.logged_in = true;
     }
