@@ -20,7 +20,7 @@ fn isBitset(comptime T: type) bool {
 }
 
 /// Every struct and union reachable from a packet, each of which gets interned key strings.
-const keyed_types: []const type = blk: {
+pub const keyed_types: []const type = blk: {
     @setEvalBranchQuota(10_000_000);
     var seen: []const type = &.{};
     collect(Packet, &seen);
@@ -151,6 +151,7 @@ pub fn toZval(comptime T: type, value: T, out: *c.zval) DecodeError!void {
         },
         .@"union" => |info| switch (value) {
             inline else => |payload, tag| {
+                if (binding.isObjectUnion(T)) return toZval(@TypeOf(payload), payload, out);
                 const index = comptime fieldIndex(info.field_names, @tagName(tag));
                 try spend(1);
                 const array = zend.Array.init(1);
@@ -335,6 +336,9 @@ pub const Encoder = struct {
                 return result;
             },
             .@"union" => |info| {
+                if (comptime binding.hasVariantClasses(T)) {
+                    if (Zval.raw.is(zv, .object)) return self.variantObject(T, zv);
+                }
                 if (!Zval.raw.is(zv, .array)) return self.fail("must be of type array", zv);
                 const array = Zval.raw.asUnchecked(zv, .array);
                 if (array.len() != 1) return self.fail("must hold exactly one variant", null);
@@ -378,6 +382,26 @@ pub const Encoder = struct {
             self.pop();
         }
         return result;
+    }
+
+    /// Picks the variant whose bound class the object is, checking exact classes before subclasses.
+    fn variantObject(self: *Encoder, comptime T: type, zv: *c.zval) Error!T {
+        const info = @typeInfo(T).@"union";
+        const ce = zv.value.obj.*.ce;
+        inline for (info.field_names, info.field_types) |name, F| {
+            if (binding.classOf(F)) |class| if (ce == class.ce) return self.variant(T, name, F, zv);
+        }
+        inline for (info.field_names, info.field_types) |name, F| {
+            if (binding.classOf(F)) |class| if (c.instanceof_function(ce, class.ce)) return self.variant(T, name, F, zv);
+        }
+        return self.fail("is an object of none of its variant classes", zv);
+    }
+
+    fn variant(self: *Encoder, comptime T: type, comptime name: [:0]const u8, comptime F: type, zv: *c.zval) Error!T {
+        self.push(.{ .name = name });
+        const payload = try self.fromObject(F, zv);
+        self.pop();
+        return @unionInit(T, name, payload);
     }
 
     fn items(self: *Encoder, comptime T: type, zv: *c.zval) Error![]const T {

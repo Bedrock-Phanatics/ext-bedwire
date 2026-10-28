@@ -68,10 +68,37 @@ pub fn FlatInner(comptime T: type) ?type {
     }
 }
 
+/// Unions whose variants are distinct structs, which stand for themselves as their variant's object once every variant
+/// is bound.
+const object_unions: []const type = blk: {
+    @setEvalBranchQuota(100_000_000);
+    var out: []const type = &.{};
+    for (packet.keyed_types) |T| {
+        if (T != Packet and @typeInfo(T) == .@"union" and distinctStructs(T)) out = out ++ .{T};
+    }
+    break :blk out;
+};
+
+fn distinctStructs(comptime U: type) bool {
+    const types = @typeInfo(U).@"union".field_types;
+    for (types, 0..) |F, i| {
+        if (@typeInfo(F) != .@"struct" or isList(F) or isBitset(F) or indexOf(F) == null) return false;
+        for (types[0..i]) |G| if (G == F) return false;
+    }
+    return true;
+}
+
+fn unionIndex(comptime U: type) ?usize {
+    @setEvalBranchQuota(1_000_000);
+    for (object_unions, 0..) |T, i| if (T == U) return i;
+    return null;
+}
+
 const Table = struct {
     classes: [bindable.len]?*c.zend_class_entry = @splat(null),
     flat: [bindable.len]bool = @splat(false),
     plain: [bindable.len]bool = @splat(false),
+    objects: [object_unions.len]bool = @splat(false),
     offsets: [total_fields]u32 = undefined,
     kinds: [kind_slots]KindSlot = @splat(.{}),
 
@@ -141,6 +168,17 @@ pub inline fn isFlat(comptime T: type) bool {
     return bound.flat[i];
 }
 
+/// Whether the union decodes to its variant's object rather than an array keyed by the variant name.
+pub inline fn isObjectUnion(comptime U: type) bool {
+    const i = comptime unionIndex(U) orelse return false;
+    const bound = table orelse return false;
+    return bound.objects[i];
+}
+
+pub inline fn hasVariantClasses(comptime U: type) bool {
+    return comptime unionIndex(U) != null;
+}
+
 pub fn release() void {
     if (table) |bound| gpa.destroy(bound);
     table = null;
@@ -182,6 +220,8 @@ pub fn bind(types: *zend.Array) !void {
         if (!next.insertKind(ce, packet_kinds[i])) return exception.argumentValueError(1, "binds two packets to one class", .{});
     }
 
+    inline for (object_unions, 0..) |U, i| next.objects[i] = try objectMode(U, next);
+
     inline for (bindable, 0..) |entry, i| {
         if (next.classes[i]) |ce| {
             try check(entry, ce, next.offsets[starts[i]..][0..fieldCount(entry.T)], next);
@@ -201,6 +241,26 @@ const flat_targets: [bindable.len]?usize = blk: {
     }
     break :blk out;
 };
+
+/// A union is told apart by its object's class, so that only works once every variant has a class of its own.
+fn objectMode(comptime U: type, next: *const Table) !bool {
+    const types = @typeInfo(U).@"union".field_types;
+    var classes: [types.len]*c.zend_class_entry = undefined;
+    inline for (types, &classes) |F, *class| class.* = next.classes[comptime indexOf(F).?] orelse return false;
+    for (classes, 0..) |ce, i| for (classes[0..i]) |other| {
+        if (c.instanceof_function(ce, other) or c.instanceof_function(other, ce)) {
+            return exception.argumentValueError(1, "binds two variants of one union to related classes %s and %s", .{ @as([*:0]const u8, @ptrCast(other.name.*.val())), @as([*:0]const u8, @ptrCast(ce.name.*.val())) });
+        }
+    };
+    return true;
+}
+
+fn acceptsVariants(comptime U: type, t: c.zend_type, next: *const Table) bool {
+    inline for (@typeInfo(U).@"union".field_types) |F| {
+        if (!acceptsObject(t, next.classes[comptime indexOf(F).?].?)) return false;
+    }
+    return true;
+}
 
 const unusable_class = c.ZEND_ACC_INTERFACE | c.ZEND_ACC_TRAIT | c.ZEND_ACC_ENUM | c.ZEND_ACC_EXPLICIT_ABSTRACT_CLASS | c.ZEND_ACC_IMPLICIT_ABSTRACT_CLASS;
 
@@ -236,7 +296,10 @@ fn accepts(comptime F: type, t: c.zend_type, next: *const Table) bool {
         .optional => |info| mask & c.MAY_BE_NULL != 0 and accepts(info.child, t, next),
         .pointer => |info| mask & (if (info.child == u8) c.MAY_BE_STRING else c.MAY_BE_ARRAY) != 0,
         .array => |info| mask & (if (info.child == u8) c.MAY_BE_STRING else c.MAY_BE_ARRAY) != 0,
-        .@"union" => mask & c.MAY_BE_ARRAY != 0,
+        .@"union" => if (comptime unionIndex(F)) |u|
+            (if (next.objects[u]) acceptsVariants(F, t, next) else mask & c.MAY_BE_ARRAY != 0)
+        else
+            mask & c.MAY_BE_ARRAY != 0,
         .@"struct" => if (comptime isBitset(F))
             mask & c.MAY_BE_STRING != 0
         else if (comptime isList(F))
@@ -282,7 +345,7 @@ fn describe(comptime F: type) [:0]const u8 {
         .optional => |info| "null and " ++ describe(info.child),
         .pointer => |info| if (info.child == u8) "string" else "array",
         .array => |info| if (info.child == u8) "string" else "array",
-        .@"union" => "array",
+        .@"union" => if (unionIndex(F) != null) "an array or its variant classes" else "array",
         .@"struct" => if (isBitset(F)) "string" else if (isList(F)) "array" else "an array or its bound class",
         else => @compileError("unsupported type " ++ @typeName(F)),
     };
