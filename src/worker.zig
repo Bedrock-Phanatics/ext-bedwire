@@ -80,21 +80,33 @@ const Trust = struct {
     keys: []const []const u8,
 
     /// Without authentication every client is accepted, and the identity digest still lets PHP recognise proxies.
-    fn verifier(self: *Trust) ?nethernet.sdp_identity.Verifier {
+    /// LAN offers are verified on the network thread, so they never wait on downloading Minecraft's keys.
+    fn verifier(self: *Trust, comptime cached: bool) ?nethernet.sdp_identity.Verifier {
         if (self.authority == null) return null;
-        return .{ .context = self, .verify = verify };
+        return .{ .context = self, .verify = if (cached) verifyCached else verify };
     }
 
     fn verify(context: ?*anyopaque, token: []const u8) anyerror!?nethernet.sdp_identity.Key {
         const self: *Trust = @ptrCast(@alignCast(context.?));
-        // Listed keys are checked first, since it is cheap and never waits on fetching Minecraft's keys.
-        if (self.keys.len != 0) {
-            const key = try nethernet.identity.claimPublicKey(self.allocator, token, std.Io.Clock.real.now(self.io).toSeconds(), .client);
-            const der = bedwire.crypto.spki.encode(key);
-            for (self.keys) |trusted| if (std.mem.eql(u8, trusted, &der)) return key;
-        }
+        if (try self.listed(token)) |key| return key;
         const authority = self.authority.?;
         return authority.verifier().verify(authority, token);
+    }
+
+    fn verifyCached(context: ?*anyopaque, token: []const u8) anyerror!?nethernet.sdp_identity.Key {
+        const self: *Trust = @ptrCast(@alignCast(context.?));
+        if (try self.listed(token)) |key| return key;
+        const authority = self.authority.?;
+        return authority.cachedVerifier().verify(authority, token);
+    }
+
+    /// Listed keys are checked first, since it is cheap and never waits on fetching Minecraft's keys.
+    fn listed(self: *Trust, token: []const u8) !?nethernet.sdp_identity.Key {
+        if (self.keys.len == 0) return null;
+        const key = try nethernet.identity.claimPublicKey(self.allocator, token, std.Io.Clock.real.now(self.io).toSeconds(), .client);
+        const der = bedwire.crypto.spki.encode(key);
+        for (self.keys) |trusted| if (std.mem.eql(u8, trusted, &der)) return key;
+        return null;
     }
 };
 
@@ -161,6 +173,7 @@ pub const Worker = struct {
         const authority: ?*Authority = if (config.authentication) blk: {
             const value = try allocator.create(Authority);
             value.* = .init(allocator, io);
+            value.refreshInBackground();
             break :blk value;
         } else null;
         errdefer if (authority) |value| {
@@ -180,7 +193,7 @@ pub const Worker = struct {
         const connection: nethernet.ConnectionOptions = .{
             .server_identity_key = identity_key,
             .allow_anonymous = authority == null,
-            .verify_client = trust.verifier(),
+            .verify_client = trust.verifier(false),
             .maximum_message_size = host_mod.max_frame_bytes,
             .native = .{
                 .queue_bytes = config.receive_queue_bytes,
@@ -201,7 +214,9 @@ pub const Worker = struct {
             .wakeup = &shared.wakeup,
         });
         errdefer listener.destroy();
-        var lan: ?Lan = if (config.lan_port != 0) try Lan.open(allocator, io, config, connection, &shared.wakeup) else null;
+        var lan_connection = connection;
+        lan_connection.verify_client = trust.verifier(true);
+        var lan: ?Lan = if (config.lan_port != 0) try Lan.open(allocator, io, config, lan_connection, &shared.wakeup) else null;
         errdefer if (lan) |*value| value.close();
 
         self.* = .{
