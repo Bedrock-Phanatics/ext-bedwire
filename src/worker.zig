@@ -705,7 +705,8 @@ pub const Worker = struct {
         while (i < self.active_len) {
             const slot = &self.slots[self.active[i]];
             const done = slot.phase == .draining and
-                (now >= slot.drain_deadline_ms or slot.connection.diagnostics().bufferedOutgoingBytes() == 0);
+                (now >= slot.drain_deadline_ms or (slot.connection.diagnostics().bufferedOutgoingBytes() == 0 and
+                    slot.connection.unackedAmount() == 0));
             if (done) self.release(slot) else i += 1;
         }
     }
