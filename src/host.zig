@@ -40,7 +40,7 @@ pub const Config = struct {
     /// Per client IP, or /64 for IPv6, so one address can't take every negotiation or HTTP worker. 0 is unlimited, loopback is exempt.
     max_negotiations_per_address: u32 = 4,
     max_connections_per_address: u32 = 8,
-    http_workers: u32 = 16,
+    http_workers: u32 = 32,
     /// Per connection buffering for received and unsent data.
     receive_queue_bytes: usize = 1024 * 1024,
     send_buffer_bytes: usize = 16 * 1024 * 1024,

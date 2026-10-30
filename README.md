@@ -146,7 +146,7 @@ $server->stop(2000);
 | `packet_rate` | 2000 | Packets per second per session (0 disables). Exceeding it disconnects with `REASON_OVERLOAD` |
 | `byte_rate` | 1 MiB | Compressed bytes per second per session, with room for one 4 MiB frame (0 disables). Exceeding it disconnects with `REASON_OVERLOAD` |
 | `login_timeout_ms` | 10000 | Time to finish logging in before `REASON_TIMEOUT` |
-| `max_negotiations`, `http_workers` | 16 | Concurrent joins in negotiation, and HTTP signaling workers |
+| `max_negotiations`, `http_workers` | 16, 32 | Concurrent joins in negotiation, and HTTP signaling workers. A request must arrive within 2 s |
 | `max_negotiations_per_address`, `max_connections_per_address` | 4, 8 | Per client IP (or IPv6 /64) caps on joins in negotiation and open HTTP connections. 0 is unlimited, loopback is exempt |
 | `max_batch_bytes` | 4 MiB | Largest decompressed batch in either direction |
 | `command_queue_bytes`, `event_queue_bytes` | 16 MiB | Ring sizes |

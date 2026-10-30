@@ -57,7 +57,7 @@ const Lan = struct {
             .ip4 => .{ .ip4 = .unspecified(config.lan_port) },
             .ip6 => .{ .ip6 = .unspecified(config.lan_port) },
         };
-        const discovery = try nethernet.Discovery.listen(allocator, io, address, .{});
+        const discovery = try nethernet.Discovery.listen(allocator, io, address, .{ .keep_responses = false });
         errdefer discovery.destroy();
         const listener = try nethernet.LanListener.listen(allocator, discovery, .{
             .connection = connection,
@@ -213,6 +213,7 @@ pub const Worker = struct {
             .maximum_negotiations_per_address = if (config.max_negotiations_per_address == 0) null else config.max_negotiations_per_address,
             .maximum_connections_per_address = if (config.max_connections_per_address == 0) null else config.max_connections_per_address,
             .maximum_http_workers = config.http_workers,
+            .request_read_timeout_ms = 2000,
             .maximum_pending_accepts = config.max_negotiations,
             .status_provider = .{ .context = shared, .get = status },
             .wakeup = &shared.wakeup,
