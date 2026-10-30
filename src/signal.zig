@@ -51,15 +51,16 @@ pub fn create() ?struct { signal: *Signal, handle: u64 } {
 
 /// Called by the owner when it goes away: waiters return at once and the memory goes with the last reference.
 pub fn close(signal: *Signal) void {
+    // Wake waiters while our reference still keeps the memory alive
+    signal.closed.store(true, .seq_cst);
+    signal.notify();
     acquireLock();
     for (&entries) |*entry| {
         if (entry.signal == signal) entry.signal = null;
     }
-    signal.closed.store(true, .seq_cst);
     signal.references -= 1;
     const last = signal.references == 0;
     releaseLock();
-    signal.notify();
     if (last) std.heap.c_allocator.destroy(signal);
 }
 
