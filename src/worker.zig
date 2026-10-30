@@ -101,6 +101,8 @@ const Trust = struct {
 pub const Worker = struct {
     /// Event space held back so every live session's disconnect is always delivered.
     pub const obligation_bytes = 32;
+    /// One disconnect may wrap the ring and pad up to 16 bytes, which a lone session's 8 bytes of slack can't cover.
+    const obligation_wrap_bytes = 16;
     const commands_per_turn = 4096;
     const messages_per_turn = 64;
     const drain_poll_ms = 10;
@@ -338,7 +340,7 @@ pub const Worker = struct {
     }
 
     fn reserveObligations(self: *const Worker, extra: usize) usize {
-        return (self.active_len + extra) * obligation_bytes;
+        return (self.active_len + extra) * obligation_bytes + obligation_wrap_bytes;
     }
 
     fn emit(self: *Worker, event: Event, len: usize) ?[]u8 {
