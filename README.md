@@ -146,9 +146,10 @@ $server->stop(2000);
 | `packet_rate` | 2000 | Packets per second per session (0 disables). Exceeding it disconnects with `REASON_OVERLOAD` |
 | `login_timeout_ms` | 10000 | Time to finish logging in before `REASON_TIMEOUT` |
 | `max_negotiations`, `http_workers` | 16 | Concurrent joins in negotiation, and HTTP signaling workers |
+| `max_negotiations_per_address`, `max_connections_per_address` | 4, 8 | Per client IP (or IPv6 /64) caps on joins in negotiation and open HTTP connections. 0 is unlimited, loopback is exempt |
 | `max_batch_bytes` | 4 MiB | Largest decompressed batch in either direction |
 | `command_queue_bytes`, `event_queue_bytes` | 16 MiB | Ring sizes |
-| `receive_queue_bytes` | 1 MiB | Per-connection receive buffering before SCTP reads pause |
+| `receive_queue_bytes` | 1 MiB | Per-connection receive buffering before SCTP reads pause, at least 256 KiB |
 | `send_buffer_bytes` | 16 MiB | Per-connection unsent data before the peer is disconnected |
 | `port_range_begin`, `port_range_end` | any | UDP ports for WebRTC |
 | `udp_mux` | false | Share one UDP socket across connections. Not verified against vanilla clients |

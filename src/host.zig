@@ -63,7 +63,7 @@ pub const Config = struct {
         if (self.event_queue_bytes < 2 * (self.max_batch_bytes + 64) or self.event_queue_bytes > 1 << 30) return error.InvalidConfig;
         if (self.stats_interval_ms < 10 or self.login_timeout_ms == 0) return error.InvalidConfig;
         if (self.max_negotiations == 0 or self.max_negotiations > 1024 or self.http_workers == 0 or self.http_workers > 1024) return error.InvalidConfig;
-        if (self.receive_queue_bytes < 64 * 1024 or self.receive_queue_bytes > 64 * 1024 * 1024) return error.InvalidConfig;
+        if (self.receive_queue_bytes < nethernet.framing.maximum_segment_payload + 1 or self.receive_queue_bytes > 64 * 1024 * 1024) return error.InvalidConfig;
         if (self.send_buffer_bytes < 256 * 1024 or self.send_buffer_bytes > 256 * 1024 * 1024) return error.InvalidConfig;
         if ((self.port_range_begin == 0) != (self.port_range_end == 0) or self.port_range_begin > self.port_range_end) return error.InvalidConfig;
         if (self.ice_servers.len > max_ice_servers or self.trusted_identity_keys.len > max_trusted_keys) return error.InvalidConfig;
