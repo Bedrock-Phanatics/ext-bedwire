@@ -35,6 +35,9 @@ pub const Config = struct {
     identity_file: ?[]const u8 = null,
     /// Concurrent WebRTC negotiations, which bounds how many players can be joining at once.
     max_negotiations: u32 = 16,
+    /// Per client IP, or /64 for IPv6, so one address can't take every negotiation or HTTP worker. 0 is unlimited, loopback is exempt.
+    max_negotiations_per_address: u32 = 4,
+    max_connections_per_address: u32 = 8,
     http_workers: u32 = 16,
     /// Per connection buffering for received and unsent data.
     receive_queue_bytes: usize = 1024 * 1024,

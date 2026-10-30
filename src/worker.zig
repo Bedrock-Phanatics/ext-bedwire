@@ -208,6 +208,8 @@ pub const Worker = struct {
         const listener = try nethernet.EndpointListener.listen(allocator, io, config.address, .{
             .connection = connection,
             .maximum_negotiations = config.max_negotiations,
+            .maximum_negotiations_per_address = if (config.max_negotiations_per_address == 0) null else config.max_negotiations_per_address,
+            .maximum_connections_per_address = if (config.max_connections_per_address == 0) null else config.max_connections_per_address,
             .maximum_http_workers = config.http_workers,
             .maximum_pending_accepts = config.max_negotiations,
             .status_provider = .{ .context = shared, .get = status },
