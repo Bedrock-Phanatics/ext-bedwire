@@ -149,6 +149,24 @@ test "per-session packet rate limit disconnects floods" {
     try support.expectDisconnect(host, joined.session, .overload);
 }
 
+test "per-session byte rate limit disconnects floods past one burst" {
+    const host = try start(.{ .byte_rate = 1024, .max_batch_bytes = 2 * 1024 * 1024, .event_queue_bytes = 16 * 1024 * 1024, .command_queue_bytes = 8 * 1024 * 1024 });
+    defer host.destroy();
+    const joined = try support.join(host, .none);
+    defer joined.client.destroy();
+
+    const body = try gpa.alloc(u8, 900 * 1024);
+    defer gpa.free(body);
+    for (body, 0..) |*byte, i| byte.* = @truncate(i *% 31);
+    const storage = try gpa.alloc(u8, body.len + 8);
+    defer gpa.free(storage);
+    const big = packets.raw(storage, packets.id(.text), body);
+    try joined.client.send(&.{big});
+    try support.expectPacket(host, joined.session, big);
+    for (0..4) |_| try joined.client.send(&.{big});
+    try support.expectDisconnect(host, joined.session, .overload);
+}
+
 test "a stalled event consumer throttles peers instead of dropping packets" {
     const host = try start(.{ .event_queue_bytes = 512 * 1024, .max_batch_bytes = 64 * 1024 });
     defer host.destroy();

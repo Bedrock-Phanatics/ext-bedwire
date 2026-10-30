@@ -26,6 +26,8 @@ pub const Config = struct {
     max_batch_bytes: usize = 4 * 1024 * 1024,
     /// Packets a session may send per second, 0 disables the limit.
     packet_rate: u32 = 2000,
+    /// Compressed bytes a session may send per second, 0 disables the limit.
+    byte_rate: u32 = 1024 * 1024,
     /// Time a connection gets to finish logging in.
     login_timeout_ms: u32 = 10_000,
     stats_interval_ms: u32 = 1000,

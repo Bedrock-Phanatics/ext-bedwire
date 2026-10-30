@@ -144,6 +144,7 @@ $server->stop(2000);
 | `identity_file` | none | PKCS#8 server identity, created if missing |
 | `lan_port` | 0 | UDP port for LAN discovery (7551 for vanilla). 0 disables it |
 | `packet_rate` | 2000 | Packets per second per session (0 disables). Exceeding it disconnects with `REASON_OVERLOAD` |
+| `byte_rate` | 1 MiB | Compressed bytes per second per session, with room for one 4 MiB frame (0 disables). Exceeding it disconnects with `REASON_OVERLOAD` |
 | `login_timeout_ms` | 10000 | Time to finish logging in before `REASON_TIMEOUT` |
 | `max_negotiations`, `http_workers` | 16 | Concurrent joins in negotiation, and HTTP signaling workers |
 | `max_negotiations_per_address`, `max_connections_per_address` | 4, 8 | Per client IP (or IPv6 /64) caps on joins in negotiation and open HTTP connections. 0 is unlimited, loopback is exempt |

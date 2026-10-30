@@ -29,6 +29,8 @@ const Slot = struct {
     drain_deadline_ms: u64 = 0,
     tokens: u32 = 0,
     refilled_ms: u64 = 0,
+    byte_tokens: u64 = 0,
+    bytes_refilled_ms: u64 = 0,
 };
 
 /// Bedwire's view of the JWKS that nethernet's authority last fetched.
@@ -479,6 +481,8 @@ pub const Worker = struct {
             .opened_ms = now,
             .tokens = self.config.packet_rate,
             .refilled_ms = now,
+            .byte_tokens = host_mod.max_frame_bytes,
+            .bytes_refilled_ms = now,
         };
         self.active[self.active_len] = index;
         self.active_len += 1;
@@ -584,6 +588,10 @@ pub const Worker = struct {
             if (slot.phase != .open) continue;
             if (message.reliability != .reliable) {
                 self.deliverUnreliable(slot, message.data);
+                continue;
+            }
+            if (!self.takeBytes(slot, message.data.len)) {
+                self.fail(slot, .overload);
                 continue;
             }
             self.ingest(slot, message.data) catch |err| self.fail(slot, switch (err) {
@@ -700,6 +708,24 @@ pub const Worker = struct {
             slot.refilled_ms = now_ms;
         }
         slot.tokens -= 1;
+        return true;
+    }
+
+    /// Decompressing costs CPU even when it yields nothing, so compressed input is budgeted per second too. The
+    /// bucket holds one largest frame, which a login needs.
+    fn takeBytes(self: *Worker, slot: *Slot, len: usize) bool {
+        const rate = self.config.byte_rate;
+        if (rate == 0) return true;
+        if (slot.byte_tokens < len) {
+            const now_ms = self.clock();
+            const refill = (now_ms -| slot.bytes_refilled_ms) *| rate / 1000;
+            if (refill != 0) {
+                slot.byte_tokens = @min(host_mod.max_frame_bytes, slot.byte_tokens +| refill);
+                slot.bytes_refilled_ms = now_ms;
+            }
+            if (slot.byte_tokens < len) return false;
+        }
+        slot.byte_tokens -= len;
         return true;
     }
 
