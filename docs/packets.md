@@ -2942,32 +2942,32 @@ One of:
 
 | Variant | PHP type |
 | --- | --- |
-| `empty` | [Descriptor__struct_937](#descriptor__struct_937) |
-| `item` | [Descriptor__struct_938](#descriptor__struct_938) |
-| `molang` | [Descriptor__struct_939](#descriptor__struct_939) |
-| `item_tag` | [Descriptor__struct_940](#descriptor__struct_940) |
+| `empty` | [Descriptor__struct_1029](#descriptor__struct_1029) |
+| `item` | [Descriptor__struct_1030](#descriptor__struct_1030) |
+| `molang` | [Descriptor__struct_1031](#descriptor__struct_1031) |
+| `item_tag` | [Descriptor__struct_1032](#descriptor__struct_1032) |
 
-### Descriptor__struct_937
+### Descriptor__struct_1029
 
 | Field | PHP type |
 | --- | --- |
 | `aux` | int |
 
-### Descriptor__struct_938
+### Descriptor__struct_1030
 
 | Field | PHP type |
 | --- | --- |
 | `name` | string |
 | `aux` | int |
 
-### Descriptor__struct_939
+### Descriptor__struct_1031
 
 | Field | PHP type |
 | --- | --- |
 | `expression` | string |
 | `version` | int |
 
-### Descriptor__struct_940
+### Descriptor__struct_1032
 
 | Field | PHP type |
 | --- | --- |
