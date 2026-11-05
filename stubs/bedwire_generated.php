@@ -6,8 +6,8 @@ namespace Bedwire;
 
 final class Protocol
 {
-    public const int VERSION = 2193;
-    public const string MINECRAFT_VERSION = "1.26.51";
+    public const int VERSION = 2225;
+    public const string MINECRAFT_VERSION = "1.26.60";
 }
 
 final class PacketId
@@ -243,4 +243,12 @@ final class PacketId
     public const int PARTY_DESTINATION_COOKIE_RESPONSE = 350;
     public const int SET_PLAYER_FURNACE_OPTIONS = 351;
     public const int RECORD_STARTED = 352;
+    public const int CLIENTBOUND_MATCHMAKING_STATE = 353;
+    public const int SERVERBOUND_STONECUTTER_SET_RECIPE = 354;
+    public const int CLIENTBOUND_STONECUTTER_SET_RECIPE = 355;
+    public const int SERVERBOUND_MATCHMAKING_CANCEL = 356;
+    public const int SET_PASSENGER_OF_BLOCK = 357;
+    public const int SERVERBOUND_CURSOR_ITEM_DRAG = 358;
+    public const int CLIENTBOUND_PLAY_AUDIO_CONTENT = 359;
+    public const int SERVERBOUND_REGISTER_AUDIO_CONTENT = 360;
 }

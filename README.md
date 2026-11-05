@@ -42,6 +42,8 @@ Other build options:
 
 Regenerate `bedwire_arginfo.h` with `php gen_stub.php bedwire.stub.php` after editing the stub.
 
+After moving Bedwire to a new protocol, run `zig build docs` and copy protocol-zig's `tests/corpus.txt` to `tests/fixtures/corpus.txt`.
+
 ## Architecture
 
 ```
