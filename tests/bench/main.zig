@@ -90,6 +90,7 @@ const Samples = struct {
                 .client_request_sub_chunk_limit = null,
                 .cache_enabled = false,
                 .cache_metadata = .empty,
+                .is_client_biome_update = false,
                 .serialized_chunk_data = &chunk_data,
             } }),
         };

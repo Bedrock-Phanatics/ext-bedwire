@@ -1,6 +1,6 @@
 .{
     .name = .ext_bedwire,
-    .version = "0.4.0",
+    .version = "0.4.1",
     .fingerprint = 0x374ec9c8fdc6c9c6,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
@@ -9,8 +9,8 @@
             .hash = "phpz-0.0.0-D3BhOA2wFQDjzXMVqZDonjuSSt89tqNJiLJKz2UIugAr",
         },
         .bedwire = .{
-            .url = "https://codeload.github.com/Bedrock-Phanatics/bedwire/tar.gz/714ad04637e1a7a1067a4e1a2e48929118a08eea",
-            .hash = "bedwire-0.6.0-6vrYrWb2HwA0oOWcgndSOEW2QjuaoV3SrpYKPhXdKqtO",
+            .url = "https://codeload.github.com/Bedrock-Phanatics/bedwire/tar.gz/2dbdeb58f40685fb50672b13efcd879400d73ed7",
+            .hash = "bedwire-0.6.1-6vrYrWb2HwADBmF-Wn6zca0gIfXycbuNu_KmI01dIHlV",
         },
         .nethernet = .{
             .url = "git+https://github.com/Bedrock-Phanatics/nethernet-zig#13dd5ce12231435a09b90aae529537ae4be8e91c",
