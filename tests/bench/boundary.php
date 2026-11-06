@@ -2,10 +2,12 @@
 
 declare(strict_types=1);
 
-// PHP-side costs of the extension: protocol codecs, NBT and an end-to-end echo server.
+// PHP-side costs of the extension: NBT and an end-to-end echo server.
 // Usage: php -d extension=bedwire.so boundary.php <load client> [pocketmine vendor dir]
 
-use Bedwire\{Nbt, PacketId, Protocol, Server};
+use Bedwire\{Nbt, Server};
+
+const TEXT = 9;
 
 $client = $argv[1] ?? null;
 $vendor = $argv[2] ?? getenv('POCKETMINE_VENDOR') ?: null;
@@ -26,49 +28,6 @@ function bench(string $name, callable $body, float $seconds = 0.3): void
     } while ($elapsed < $seconds * 1e9);
     printf("%-52s %10.1f ns/op %10.2f M ops/s\n", $name, $elapsed / $ops, $ops / ($elapsed / 1e9) / 1e6);
 }
-
-echo "== Bedwire\\Protocol from PHP ==\n";
-$move = [
-    "player_runtime_id" => 81234,
-    "position" => ["x" => 128.5, "y" => 64.0, "z" => -312.25],
-    "rotation" => ["x" => 12.5, "y" => 270.0],
-    "y_head_rotation" => 270.0,
-    "position_mode" => 0,
-    "on_ground" => true,
-    "riding_runtime_id" => 0,
-    "teleport_data" => null,
-    "tick" => 123456,
-];
-$text = [
-    "localize" => false,
-    "body" => ["author_and_message" => ["message_type" => 1, "player_name" => "Steve", "message" => "hello from the benchmark, this is a chat line"]],
-    "senders_xuid" => "2535412345678901",
-    "platform_id" => "",
-    "filtered_message" => null,
-];
-$chunk = [
-    "chunk_position" => ["x" => 10, "z" => -4],
-    "dimension_id" => 0,
-    "sub_chunks_count" => 8,
-    "client_request_sub_chunk_limit" => null,
-    "cache_enabled" => false,
-    "cache_metadata" => [],
-    "serialized_chunk_data" => str_repeat("\0", 16384),
-];
-$samples = ["move_player" => $move, "text" => $text, "level_chunk" => $chunk];
-foreach ($samples as $name => $fields) {
-    $bytes = Protocol::encode($name, $fields);
-    bench("encode $name", fn() => Protocol::encode($name, $fields));
-    bench("decode $name", fn() => Protocol::decode($bytes));
-    bench("packetId $name (header only)", fn() => Protocol::packetId($bytes));
-}
-$batch = array_fill(0, 64, Protocol::encode("move_player", $move));
-bench("decodeMany 64 move_player (per packet)", function () use ($batch) {
-    Protocol::decodeMany($batch);
-}, 0.3);
-printf("  (divide by 64: decodeMany crosses the boundary once per batch)\n");
-$pairs = array_fill(0, 64, ["move_player", $move]);
-bench("encodeMany 64 move_player (per batch)", fn() => Protocol::encodeMany($pairs));
 
 if ($vendor !== null && is_dir($vendor)) {
     spl_autoload_register(function (string $class) use ($vendor): void {
@@ -109,13 +68,16 @@ if ($client === null) {
 
 echo "\n== end to end: PHP echo server, load client in another process ==\n";
 foreach ([[1, 20], [50, 20], [200, 20]] as [$sessions, $rate]) {
-    $server = new Server("127.0.0.1", 0, ["authentication" => false, "max_sessions" => $sessions + 8, "packet_rate" => 0, "max_negotiations" => 64, "http_workers" => 64, "login_timeout_ms" => 60000]);
+    $server = new Server("127.0.0.1", 0, ["protocol_version" => 2225, "minecraft_version" => "1.26.60", "authentication" => false, "max_sessions" => $sessions + 8, "packet_rate" => 0, "max_negotiations" => 64, "http_workers" => 64, "login_timeout_ms" => 60000]);
     $process = proc_open([$client, (string) $server->getPort(), (string) $sessions, (string) $rate, "5", "64"], [1 => ["pipe", "w"]], $pipes);
     $steps = [];
-    $settings = Protocol::encode("network_settings", ["compression_threshold" => 256, "compression_algorithm" => 0, "client_throttle_enabled" => false, "client_throttle_threshold" => 0, "client_throttle_scalar" => 0.0]);
-    $status = Protocol::encode("play_status", ["status" => 0]);
-    $packs = Protocol::encode("resource_packs_info", ["resource_pack_required" => false, "has_addon_packs" => false, "has_scripts" => false, "force_disable_vibrant_visuals" => false, "world_template_id_and_version" => ["pack_uuid" => str_repeat("\0", 16), "pack_version" => ""], "resource_packs" => []]);
-    $start = "\x0bstart";
+    // NetworkSettings, PlayStatus success and an empty 1.26.60 pack offer, written by hand.
+    $settings = "\x8f\x01" . pack("vvCCg", 256, 0, 0, 0, 0.0);
+    $status = "\x02" . pack("N", 0);
+    $packs = "\x06" . str_repeat("\0", 22);
+    $stack = "\x07" . str_repeat("\0", 9);
+    // StartGame's unique and runtime IDs, then PlayStatus spawn.
+    $start = ["\x0b\x02\x01", "\x02" . pack("N", 3)];
     // Any valid P-384 key works here, since NetherNet sessions are not encrypted by Bedrock.
     $der = base64_decode("MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEuyHwtjuGx8e2cPN6hfK87jCHrFlgU89VI5JZUTZJ9VafKjU1pVRe1nXHgvs6En0bB0uILy89E4KfWZRGPrvh06zfueS24YCWPaVk58qDzGXn6/hZTarLNEvuxI1ZatZY");
     $echoed = 0;
@@ -131,7 +93,7 @@ foreach ([[1, 20], [50, 20], [200, 20]] as [$sessions, $rate]) {
             $session = $events[$i + 1];
             $bytes = $events[$i + 2];
             $id = ord($bytes[0]);
-            if ($id === PacketId::TEXT) {
+            if ($id === TEXT) {
                 $server->send($session, $bytes);
                 $echoed++;
                 continue;
@@ -139,8 +101,8 @@ foreach ([[1, 20], [50, 20], [200, 20]] as [$sessions, $rate]) {
             $step = $steps[$session] = ($steps[$session] ?? -1) + 1;
             match ($step) {
                 0 => $server->send($session, $settings),
-                1 => $server->acceptLogin($session, $der) && $server->sendBatch($session, [$status, $packs]),
-                2 => $server->send($session, $start),
+                1 => $server->acceptLogin($session, $der) && $server->sendBatch($session, [$status, $packs, $stack]),
+                2 => $server->sendBatch($session, $start),
                 default => null,
             };
         }

@@ -10,13 +10,6 @@ namespace Bedwire {
 
     final class BackpressureException extends Exception {}
 
-    final class PacketException extends Exception {
-        /** The schema field, such as Emote.emote_id, or decode limit, such as max_string_bytes, that rejected the packet. */
-        public ?string $field = null;
-        public ?int $observed = null;
-        public ?int $limit = null;
-    }
-
     final class NbtException extends Exception {}
 
     /**
@@ -39,7 +32,11 @@ namespace Bedwire {
         public const int REASON_AUTHENTICATION = 5;
         public const int REASON_TIMEOUT = 6;
 
-        public function __construct(string $address, int $port, array $options = []) {}
+        /**
+         * Options must include protocol_version (int) and minecraft_version (string). serverbound_packets (list of
+         * packet IDs) limits which non-handshake packets clients may send.
+         */
+        public function __construct(string $address, int $port, array $options) {}
 
         public function stop(int $timeoutMs = 2000): void {}
 
@@ -55,8 +52,6 @@ namespace Bedwire {
 
         public function sendBatch(int $session, array $packets): bool {}
 
-        public function sendPackets(int $session, array $packets): bool {}
-
         public function sendRawBatch(int $session, string $batch, int $offset = 0): bool {}
 
         public function sendUnreliable(int $session, string $payload): bool {}
@@ -71,43 +66,6 @@ namespace Bedwire {
 
         public function getStatistics(): array {}
     }
-
-    /** @not-serializable */
-    final class Protocol
-    {
-        public const int CLIENTBOUND = 1;
-        public const int SERVERBOUND = 2;
-        public const int BIDIRECTIONAL = 3;
-
-        private function __construct() {}
-
-        public static function id(string $name): int {}
-
-        public static function name(int $id): ?string {}
-
-        public static function direction(int|string $packet): int {}
-
-        public static function header(string $bytes): array {}
-
-        public static function packetId(string $bytes): int {}
-
-        public static function decode(string $bytes, int $maxValues = 0): array|object|null {}
-
-        public static function decodeMany(array $packets, int $maxValues = 0): array {}
-
-        public static function encode(int|string $packet, array|object $fields, int $senderSubClient = 0, int $targetSubClient = 0): string {}
-
-        public static function encodeMany(array $packets): array {}
-
-        public static function encodeBatch(array $packets): string {}
-
-        public static function schema(): array {}
-
-        public static function bind(array $types): void {}
-    }
-
-    /** @not-serializable */
-    final class PacketId {}
 
     /** @not-serializable */
     final class Nbt

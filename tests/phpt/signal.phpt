@@ -6,7 +6,8 @@ bedwire
 <?php
 use Bedwire\Server;
 
-$server = new Server("127.0.0.1", 0, ["authentication" => false]);
+require __DIR__ . '/server.inc';
+$server = new Server("127.0.0.1", 0, OPTIONS);
 $signal = $server->eventSignal();
 var_dump(is_int($signal));
 $start = hrtime(true);

@@ -23,9 +23,9 @@ test "a vanilla-shaped client logs in and exchanges batched gameplay" {
     var b: [64]u8 = undefined;
     var c: [8192]u8 = undefined;
     @memset(&c, 'x');
-    const first = packets.raw(&a, packets.id(.text), "hello");
-    const second = packets.raw(&b, packets.id(.text), "world");
-    const large = packets.raw(&c, packets.id(.text), c[0..4000]);
+    const first = packets.raw(&a, packets.text, "hello");
+    const second = packets.raw(&b, packets.text, "world");
+    const large = packets.raw(&c, packets.text, c[0..4000]);
     try host.send(joined.session, &.{ first, second, large });
     const received = try client.expectPackets(3, 5000);
     try testing.expectEqualSlices(u8, first, received[0]);
@@ -45,7 +45,7 @@ test "snappy and uncompressed sessions work through the worker" {
     for ([_]packets.Compression{ .snappy, .none }) |algorithm| {
         const joined = try support.join(host, algorithm);
         var a: [64]u8 = undefined;
-        const text = packets.raw(&a, packets.id(.text), "compressed");
+        const text = packets.raw(&a, packets.text, "compressed");
         try host.send(joined.session, &.{text});
         try testing.expectEqualSlices(u8, text, (try joined.client.expectPackets(1, 5000))[0]);
         joined.client.destroy();
@@ -64,7 +64,7 @@ test "large frames are fragmented and reassembled in order" {
     for (body, 0..) |*byte, i| byte.* = @truncate(i *% 31);
     const storage = try gpa.alloc(u8, body.len + 8);
     defer gpa.free(storage);
-    const big = packets.raw(storage, packets.id(.text), body);
+    const big = packets.raw(storage, packets.text, body);
     try host.send(joined.session, &.{big});
     try testing.expectEqualSlices(u8, big, (try joined.client.expectPackets(1, 10_000))[0]);
     try joined.client.send(&.{big});
@@ -83,7 +83,7 @@ test "stale session IDs never reach a reused slot" {
     defer second.client.destroy();
     try testing.expect(first.session != second.session);
     var a: [16]u8 = undefined;
-    try testing.expectError(error.Closed, host.send(first.session, &.{packets.raw(&a, packets.id(.text), "x")}));
+    try testing.expectError(error.Closed, host.send(first.session, &.{packets.raw(&a, packets.text, "x")}));
     try testing.expectError(error.Closed, host.disconnect(first.session));
 }
 
@@ -93,7 +93,7 @@ test "a server disconnect delivers queued packets before the connection closes" 
     const joined = try support.join(host, .none);
     defer joined.client.destroy();
     var a: [64]u8 = undefined;
-    const goodbye = packets.typed(&a, .{ .disconnect = .{ .reason = @fromBackingInt(0), .messages = .{ .messages = .{ .message = "bye", .filtered_message = "" } } } });
+    const goodbye = packets.raw(&a, packets.id(.disconnect), "\x00\x00\x03bye\x00");
     try host.send(joined.session, &.{goodbye});
     try host.disconnect(joined.session);
     try testing.expectEqualSlices(u8, goodbye, (try joined.client.expectPackets(1, 5000))[0]);
@@ -118,8 +118,30 @@ test "out-of-stage packets from the client are refused" {
     defer client.destroy();
     const session = try support.expectConnect(host);
     var a: [64]u8 = undefined;
-    try client.sendRaw(packets.raw(&a, packets.id(.text), "too early"));
+    try client.sendRaw(packets.raw(&a, packets.text, "too early"));
     try support.expectDisconnect(host, session, .protocol);
+}
+
+test "a serverbound list refuses other gameplay IDs from the client" {
+    var ids: native.PacketIds = .empty;
+    ids.set(packets.text);
+    const host = try start(.{ .serverbound_packets = ids });
+    defer host.destroy();
+    const joined = try support.join(host, .zlib);
+    defer joined.client.destroy();
+
+    var a: [64]u8 = undefined;
+    const allowed = packets.raw(&a, packets.text, "allowed");
+    try joined.client.send(&.{allowed});
+    try support.expectPacket(host, joined.session, allowed);
+
+    var b: [64]u8 = undefined;
+    try host.send(joined.session, &.{packets.raw(&b, 1020, "clientbound")});
+    _ = try joined.client.expectPackets(1, 5000);
+
+    try joined.client.send(&.{packets.raw(&b, 1020, "refused")});
+    try support.expectDisconnect(host, joined.session, .protocol);
+    try testing.expectEqual(@as(u64, 1), host.statistics().protocol_disconnects);
 }
 
 test "packets the server stage forbids are dropped, not sent" {
@@ -142,7 +164,7 @@ test "per-session packet rate limit disconnects floods" {
     const joined = try support.join(host, .none);
     defer joined.client.destroy();
     var a: [64]u8 = undefined;
-    const text = packets.raw(&a, packets.id(.text), "spam");
+    const text = packets.raw(&a, packets.text, "spam");
     var batch: [200][]const u8 = undefined;
     @memset(&batch, text);
     try joined.client.send(&batch);
@@ -160,7 +182,7 @@ test "per-session byte rate limit disconnects floods past one burst" {
     for (body, 0..) |*byte, i| byte.* = @truncate(i *% 31);
     const storage = try gpa.alloc(u8, body.len + 8);
     defer gpa.free(storage);
-    const big = packets.raw(storage, packets.id(.text), body);
+    const big = packets.raw(storage, packets.text, body);
     try joined.client.send(&.{big});
     try support.expectPacket(host, joined.session, big);
     for (0..4) |_| try joined.client.send(&.{big});
@@ -178,7 +200,7 @@ test "a stalled event consumer throttles peers instead of dropping packets" {
     for (0..sent) |i| {
         std.mem.writeInt(u32, body[0..4], @intCast(i), .little);
         var storage: [1100]u8 = undefined;
-        try joined.client.send(&.{packets.raw(&storage, packets.id(.text), &body)});
+        try joined.client.send(&.{packets.raw(&storage, packets.text, &body)});
     }
     // Give the worker time to fill the queue while nothing drains it.
     try host.io().sleep(.fromMilliseconds(300), .awake);
@@ -248,7 +270,7 @@ test "unreliable messages are dropped without closing the session" {
     defer joined.client.destroy();
     try joined.client.connection.send("\x01\x02", .unreliable);
     var a: [64]u8 = undefined;
-    const text = packets.raw(&a, packets.id(.text), "after");
+    const text = packets.raw(&a, packets.text, "after");
     try joined.client.send(&.{text});
     try support.expectPacket(host, joined.session, text);
     try testing.expectEqual(@as(u64, 1), host.statistics().unreliable_dropped);
@@ -295,7 +317,7 @@ test "the signaling endpoint reports the status PHP sets" {
     const response = body.written();
     try testing.expect(std.mem.indexOf(u8, response, "\"name\":\"Quark \\\"test\\\"\"") != null);
     try testing.expect(std.mem.indexOf(u8, response, "\"maxPlayers\":20") != null);
-    try testing.expect(std.mem.indexOf(u8, response, std.fmt.comptimePrint("\"protocol\":{d}", .{bedwire.protocol.protocol_version})) != null);
+    try testing.expect(std.mem.indexOf(u8, response, std.fmt.comptimePrint("\"protocol\":{d}", .{packets.protocol_version})) != null);
 }
 
 test "invalid configurations are refused" {
@@ -303,6 +325,10 @@ test "invalid configurations are refused" {
     try testing.expectError(error.InvalidConfig, start(.{ .max_batch_bytes = 1024 }));
     try testing.expectError(error.InvalidConfig, start(.{ .port_range_begin = 5000 }));
     try testing.expectError(error.InvalidConfig, start(.{ .receive_queue_bytes = 1 }));
+    try testing.expectError(error.InvalidConfig, start(.{ .protocol_version = 0 }));
+    try testing.expectError(error.InvalidConfig, start(.{ .protocol_version = 1 << 31 }));
+    try testing.expectError(error.InvalidConfig, start(.{ .minecraft_version = "" }));
+    try testing.expectError(error.InvalidConfig, start(.{ .minecraft_version = "123456789012345678901234567890123" }));
 }
 
 test "a port already in use fails cleanly" {
@@ -319,7 +345,7 @@ test "queued single sends to one session coalesce without reordering" {
     const joined = try support.join(host, .none);
     defer joined.client.destroy();
     var storage: [100][16]u8 = undefined;
-    for (&storage, 0..) |*buffer, i| try host.send(joined.session, &.{packets.raw(buffer, packets.id(.text), &.{@intCast(i)})});
+    for (&storage, 0..) |*buffer, i| try host.send(joined.session, &.{packets.raw(buffer, packets.text, &.{@intCast(i)})});
     const received = try joined.client.expectPackets(100, 5000);
     for (received, 0..) |packet, i| try testing.expectEqual(@as(u8, @intCast(i)), packet[packet.len - 1]);
     try testing.expect(host.statistics().batches_sent < 100 + 10);
@@ -351,14 +377,14 @@ test "LAN discovery advertises the status and accepts a LAN join" {
     try testing.expectEqualStrings("LAN test", data.server_name);
     try testing.expectEqualStrings("lan world", data.level_name);
     try testing.expectEqual(@as(i32, 10), data.max_player_count);
-    try testing.expectEqual(@as(i32, @intCast(bedwire.protocol.protocol_version)), data.protocol);
+    try testing.expectEqual(@as(i32, packets.protocol_version), data.protocol);
 
     const client = try support.Client.adopt(io, try nethernet.dialLan(gpa, discovery, server_id, support.Client.options));
     defer client.destroy();
     const session = try support.expectConnect(host);
     try support.login(host, client, session, .zlib);
     var a: [64]u8 = undefined;
-    const text = packets.raw(&a, packets.id(.text), "over lan");
+    const text = packets.raw(&a, packets.text, "over lan");
     try host.send(session, &.{text});
     try testing.expectEqualSlices(u8, text, (try client.expectPackets(1, 5000))[0]);
 }
@@ -372,8 +398,8 @@ test "raw batches are split natively and sent in order" {
     var first: [64]u8 = undefined;
     var second: [400]u8 = undefined;
     const body: [300]u8 = @splat('y');
-    const a = packets.raw(&first, packets.id(.text), "short");
-    const b = packets.raw(&second, packets.id(.text), &body);
+    const a = packets.raw(&first, packets.text, "short");
+    const b = packets.raw(&second, packets.text, &body);
     var batch: [512]u8 = undefined;
     var len: usize = 0;
     for ([_][]const u8{ a, b }) |packet| {

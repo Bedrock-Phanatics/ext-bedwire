@@ -1,12 +1,12 @@
 //! Joins a server like an offline vanilla client: `join <port> <name> [seconds] [record]`.
 //! It logs in with a self-signed identity, accepts the packs, spawns, stays for the given time and prints one JSON line.
-//! With a record file it also decodes every server packet strictly, writes each one as `<id> <hex>`, and plays a little
-//! after spawning: it walks, chats and runs a command.
+//! With a record file it also writes every server packet as `<id> <hex>`. BEDWIRE_PROTOCOL and BEDWIRE_MINECRAFT_VERSION
+//! set the version it announces.
 const std = @import("std");
 const bedwire = @import("bedwire");
 const peer_mod = @import("peer.zig");
 
-const protocol = bedwire.protocol;
+const control = bedwire.control;
 const login = bedwire.auth.login;
 const allocator = std.heap.smp_allocator;
 
@@ -29,10 +29,19 @@ pub fn main(init: std.process.Init) !void {
     const peer = try peer_mod.Peer.connect(allocator, io, port, &pool, null);
     defer peer.destroy();
 
-    var storage: [512]u8 = undefined;
-    try peer.send(&.{peer_mod.typed(&storage, .{ .request_network_settings = .{ .client_network_version = protocol.Current.protocol_number } })});
+    const protocol_version = if (init.environ_map.get("BEDWIRE_PROTOCOL")) |text| try std.fmt.parseInt(i32, text, 10) else peer_mod.protocol_version;
+    const minecraft_version = init.environ_map.get("BEDWIRE_MINECRAFT_VERSION") orelse peer_mod.minecraft_version;
 
-    var join: Join = .{ .peer = peer, .name = name, .record = if (record_writer) |*writer| &writer.interface else null };
+    var storage: [512]u8 = undefined;
+    try peer.send(&.{try control.encode(&storage, control.RequestNetworkSettings{ .protocol_version = protocol_version })});
+
+    var join: Join = .{
+        .peer = peer,
+        .name = name,
+        .protocol_version = protocol_version,
+        .minecraft_version = minecraft_version,
+        .record = if (record_writer) |*writer| &writer.interface else null,
+    };
     const deadline = start + 30 * std.time.ns_per_s;
     var stay_until: ?u64 = null;
     while (true) {
@@ -42,7 +51,6 @@ pub fn main(init: std.process.Init) !void {
         } else if (join.spawned_ns != null) {
             stay_until = now + @as(u64, seconds) * std.time.ns_per_s;
         } else if (now > deadline) return fail("timed out in state {t}", .{peer.session.state});
-        if (join.record != null and join.spawned_ns != null) try join.play(now);
 
         const token = peer.connection.prepareWait();
         while (peer.connection.poll() catch return fail("connection closed in state {t}", .{peer.session.state})) |event| {
@@ -69,64 +77,16 @@ fn fail(comptime format: []const u8, args: anytype) error{JoinFailed} {
 const Join = struct {
     peer: *peer_mod.Peer,
     name: []const u8,
+    protocol_version: i32,
+    minecraft_version: []const u8,
     runtime_id: u64 = 0,
     packets: usize = 0,
     chunks: usize = 0,
     spawned_ns: ?u64 = null,
     record: ?*std.Io.Writer = null,
-    position: protocol.Vec3f = .{ .x = 0, .y = 0, .z = 0 },
-    tick: u64 = 0,
-    next_input_ns: u64 = 0,
-
-    /// Sends an input every 50 ms, like a client standing still, then a chat line and a command once.
-    fn play(self: *Join, now: u64) !void {
-        if (now < self.next_input_ns) return;
-        self.next_input_ns = now + 50 * std.time.ns_per_ms;
-        var storage: [512]u8 = undefined;
-        const zero: protocol.Vec2f = .{ .x = 0, .y = 0 };
-        try self.peer.send(&.{peer_mod.typed(&storage, .{ .player_auth_input = .{
-            .player_rotation = zero,
-            .position = self.position,
-            .move_vector = zero,
-            .player_head_rotation = 0,
-            .input_data = .init(&.{}),
-            .input_mode = .mouse,
-            .play_mode = .normal,
-            .new_interaction_model = .crosshair,
-            .interact_rotation = zero,
-            .client_tick = self.tick,
-            .pos_delta = .{ .x = 0, .y = 0, .z = 0 },
-            .item_use_transaction = null,
-            .item_stack_request = null,
-            .player_block_actions = null,
-            .vehicle_rotation = null,
-            .client_predicted_vehicle = null,
-            .analog_move_vector = zero,
-            .camera_orientation = .{ .x = 0, .y = 0, .z = 1 },
-            .raw_move_vector = zero,
-        } })});
-        self.tick += 1;
-        if (self.tick == 10) {
-            try self.peer.send(&.{peer_mod.typed(&storage, .{ .text = .{
-                .localize = false,
-                .body = .{ .author_and_message = .{ .message_type = .chat, .player_name = self.name, .message = "hello from bedwire-join" } },
-                .senders_xuid = "",
-                .platform_id = "",
-                .filtered_message = null,
-            } })});
-            try self.peer.send(&.{peer_mod.typed(&storage, .{ .command_request = .{
-                .command = "/version",
-                .origin = .{ .type = "player", .uuid = @splat(0), .request_id = "", .player_id = 0 },
-                .is_internal = false,
-                .version = "latest",
-            } })});
-        }
-    }
 
     fn write(self: *Join, packet: anytype) !void {
         const writer = self.record orelse return;
-        if (packet.kind == null) return fail("server sent unknown packet ID {d}", .{packet.id});
-        _ = self.peer.session.decodePacket(packet) catch |err| return fail("server sent a malformed {t}: {t}", .{ packet.kind.?, err });
         try writer.print("{d} {x}\n", .{ packet.id, packet.bytes });
     }
 
@@ -137,6 +97,7 @@ const Join = struct {
         while (batch.next()) |packet| {
             self.packets += 1;
             try self.write(packet);
+            if (packet.id == level_chunk_id) self.chunks += 1;
             const kind = packet.kind orelse continue;
             switch (kind) {
                 .network_settings => {
@@ -144,37 +105,29 @@ const Join = struct {
                     try self.sendLogin();
                 },
                 .play_status => {
-                    const status = (try self.peer.session.decodePacket(packet)).value.typed.play_status.status;
+                    const status = (try self.peer.session.decodeControl(control.PlayStatus, packet)).status;
                     switch (status) {
-                        .loginsuccess => {},
-                        .playerspawn => if (self.spawned_ns == null) {
-                            try self.peer.send(&.{peer_mod.typed(&storage, .{ .set_local_player_as_initialised = .{ .player_id = self.runtime_id } })});
+                        control.PlayStatus.login_success => {},
+                        control.PlayStatus.player_spawn => if (self.spawned_ns == null) {
+                            try self.peer.send(&.{try control.encode(&storage, control.SetLocalPlayerAsInitialised{ .runtime_id = self.runtime_id })});
                             try self.peer.session.advance(.in_game);
                             self.spawned_ns = peer_mod.nowNs(self.peer.io);
                         },
-                        else => return fail("login refused with status {d}", .{@backingInt(status)}),
+                        else => return fail("login refused with status {d}", .{status}),
                     }
                 },
-                .resource_packs_info => try self.peer.send(&.{peer_mod.typed(&storage, .{ .resource_pack_client_response = .{ .response = .{ .downloading_finished = "downloadingfinished" } } })}),
+                .resource_packs_info => try self.peer.send(&.{try control.encode(&storage, control.ResourcePackClientResponse{ .status = .downloading_finished, .text = "downloadingfinished" })}),
                 .resource_pack_stack => {
-                    try self.peer.send(&.{peer_mod.typed(&storage, .{ .resource_pack_client_response = .{ .response = .{ .resource_pack_stack_finished = "resourcepackstackfinished" } } })});
+                    try self.peer.send(&.{try control.encode(&storage, control.ResourcePackClientResponse{ .status = .resource_pack_stack_finished, .text = "resourcepackstackfinished" })});
                     try self.peer.session.advance(.waiting_for_start_game);
                 },
                 .start_game => {
-                    self.runtime_id = try startGameRuntimeId(packet.bytes);
-                    if (self.record != null) self.position = (try self.peer.session.decodePacket(packet)).value.typed.start_game.position;
+                    self.runtime_id = (try self.peer.session.decodeControl(control.StartGame, packet)).runtime_id;
                     try self.peer.session.advance(.spawn_ready);
-                    try self.peer.send(&.{peer_mod.typed(&storage, .{ .request_chunk_radius = .{ .chunk_radius = 4, .max_chunk_radius = 4 } })});
+                    // A radius of 4 as a zigzag varint, then the maximum radius.
+                    try self.peer.send(&.{peer_mod.raw(&storage, control.PacketKind.request_chunk_radius.id(), "\x08\x04")});
                 },
-                .level_chunk => self.chunks += 1,
-                .disconnect => {
-                    const disconnect = (try self.peer.session.decodePacket(packet)).value.typed.disconnect;
-                    const message = switch (disconnect.messages) {
-                        .messages => |messages| messages.message,
-                        .empty => "",
-                    };
-                    return fail("disconnected with reason {d}: {s}", .{ @backingInt(disconnect.reason), message });
-                },
+                .disconnect => return fail("disconnected: {x}", .{packet.bytes}),
                 else => {},
             }
         }
@@ -203,7 +156,7 @@ const Join = struct {
         const token = try login.sign(allocator, key, header, claims, limits);
         defer allocator.free(token);
 
-        const client_data_payload = try clientData(self.name, &uuid);
+        const client_data_payload = try clientData(self.name, &uuid, self.minecraft_version);
         defer allocator.free(client_data_payload);
         const client_data = try login.sign(allocator, key, header, client_data_payload, limits);
         defer allocator.free(client_data);
@@ -214,11 +167,13 @@ const Join = struct {
         defer allocator.free(request);
         const packet = try allocator.alloc(u8, request.len + 32);
         defer allocator.free(packet);
-        try self.peer.send(&.{try login.encodeLoginPacket(protocol.Current, packet, request, limits)});
+        try self.peer.send(&.{try login.encodeLoginPacket(@intCast(self.protocol_version), packet, request, limits)});
     }
 };
 
-fn clientData(name: []const u8, uuid: []const u8) ![]u8 {
+const level_chunk_id = 58;
+
+fn clientData(name: []const u8, uuid: []const u8, minecraft_version: []const u8) ![]u8 {
     const encoder = std.base64.standard.Encoder;
     var skin: [64 * 64 * 4]u8 = undefined;
     @memset(&skin, 0xff);
@@ -238,26 +193,5 @@ fn clientData(name: []const u8, uuid: []const u8) ![]u8 {
         \\"ServerAddress":"127.0.0.1","SkinAnimationData":"","SkinColor":"#0","SkinData":"{s}","SkinGeometryData":"",
         \\"SkinGeometryDataEngineVersion":"","SkinId":"bedwire_bot","SkinImageHeight":64,"SkinImageWidth":64,
         \\"SkinResourcePatch":"{s}","ThirdPartyName":{f},"TrustedSkin":false,"UIProfile":0}}
-    , .{ uuid, protocol.minecraft_version, uuid, &skin_text, &patch_text, std.json.fmt(name, .{}) });
-}
-
-/// StartGame opens with the player's unique ID and then its runtime ID, both varints.
-fn startGameRuntimeId(bytes: []const u8) !u64 {
-    var offset: usize = 0;
-    _ = try varint(bytes, &offset);
-    _ = try varint(bytes, &offset);
-    return varint(bytes, &offset);
-}
-
-fn varint(bytes: []const u8, offset: *usize) !u64 {
-    var value: u64 = 0;
-    var shift: u7 = 0;
-    while (shift < 70) : (shift += 7) {
-        if (offset.* >= bytes.len) return error.MalformedStartGame;
-        const byte = bytes[offset.*];
-        offset.* += 1;
-        value |= @as(u64, byte & 0x7f) << @intCast(shift);
-        if (byte & 0x80 == 0) return value;
-    }
-    return error.MalformedStartGame;
+    , .{ uuid, minecraft_version, uuid, &skin_text, &patch_text, std.json.fmt(name, .{}) });
 }

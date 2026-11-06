@@ -3,11 +3,15 @@ const std = @import("std");
 const bedwire = @import("bedwire");
 const nethernet = @import("nethernet");
 
-const protocol = bedwire.protocol;
+const control = bedwire.control;
 const Ecdsa = bedwire.crypto.spki.Ecdsa;
 
-/// Packets that carry an 8-byte send timestamp, so round trips can be measured on echo.
-pub const stamp_id = protocol.Current.packetId(.text).?;
+/// The version the bench clients announce; the native server never checks it.
+pub const protocol_version: i32 = 2225;
+pub const minecraft_version = "1.26.60";
+
+/// Text packets that carry an 8-byte send timestamp, so round trips can be measured on echo.
+pub const stamp_id = 9;
 
 pub fn nowNs(io: std.Io) u64 {
     return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
@@ -115,25 +119,19 @@ pub const Peer = struct {
     /// The client half of `serverLogin`: settings, login, packs and spawn.
     pub fn login(self: *Peer) !void {
         var storage: [512]u8 = undefined;
-        try self.send(&.{typed(&storage, .{ .request_network_settings = .{ .client_network_version = protocol.Current.protocol_number } })});
+        try self.send(&.{try control.encode(&storage, control.RequestNetworkSettings{ .protocol_version = protocol_version })});
         try self.waitFor(1, 10_000);
-        try self.send(&.{typed(&storage, .{ .login = .{ .client_network_version = protocol.Current.protocol_number, .connection_request = "bench" } })});
+        try self.send(&.{try control.encode(&storage, control.Login{ .protocol_version = protocol_version, .connection_request = "bench" })});
         try self.waitFor(4, 10_000);
-        try self.send(&.{typed(&storage, .{ .resource_pack_client_response = .{ .response = .{ .resource_pack_stack_finished = "resourcepackstackfinished" } } })});
+        try self.send(&.{try control.encode(&storage, control.ResourcePackClientResponse{ .status = .resource_pack_stack_finished, .text = "resourcepackstackfinished" })});
         if (self.session.settle() != .waiting_for_start_game) return error.InvalidState;
         try self.waitFor(6, 10_000);
         if (self.session.settle() != .spawn_ready) return error.InvalidState;
-        try self.send(&.{typed(&storage, .{ .set_local_player_as_initialised = .{ .player_id = 1 } })});
+        try self.send(&.{try control.encode(&storage, control.SetLocalPlayerAsInitialised{ .runtime_id = 1 })});
         if (self.session.settle() != .in_game) return error.InvalidState;
         self.received = 0;
     }
 };
-
-pub fn typed(storage: []u8, packet: protocol.typed.Packet) []const u8 {
-    var writer = protocol.Writer.init(storage);
-    protocol.typed.encode(&writer, .{ .header = .{ .packet_id = protocol.Current.packetId(protocol.typed.packetKind(packet)).? }, .packet = packet }) catch unreachable;
-    return writer.written();
-}
 
 pub fn raw(storage: []u8, packet_id: u10, body: []const u8) []const u8 {
     const len = bedwire.framing.varint.writeU32(storage, packet_id) catch unreachable;

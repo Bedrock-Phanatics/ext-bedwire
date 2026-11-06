@@ -1,13 +1,17 @@
 const std = @import("std");
 const bedwire = @import("bedwire");
 
-const protocol = bedwire.protocol;
-const Profile = protocol.Current;
+const control = bedwire.control;
 
-pub const Compression = @FieldType(@FieldType(protocol.typed.Packet, "network_settings"), "compression_algorithm");
+pub const protocol_version: u32 = 2225;
+pub const minecraft_version = "1.26.60";
+/// Text, which Bedwire treats as opaque gameplay.
+pub const text: u10 = 9;
+
+pub const Compression = control.NetworkSettings.Algorithm;
 
 pub fn id(kind: bedwire.PacketKind) u10 {
-    return Profile.packetId(kind).?;
+    return kind.id();
 }
 
 pub fn raw(storage: []u8, packet_id: u10, body: []const u8) []const u8 {
@@ -16,53 +20,33 @@ pub fn raw(storage: []u8, packet_id: u10, body: []const u8) []const u8 {
     return storage[0 .. len + body.len];
 }
 
-pub fn typed(storage: []u8, packet: protocol.typed.Packet) []const u8 {
-    var writer = protocol.Writer.init(storage);
-    protocol.typed.encode(&writer, .{ .header = .{ .packet_id = id(protocol.typed.packetKind(packet)) }, .packet = packet }) catch unreachable;
-    return writer.written();
+fn encode(storage: []u8, value: anytype) []const u8 {
+    return control.encode(storage, value) catch unreachable;
 }
 
 pub fn request(storage: []u8) []const u8 {
-    return typed(storage, .{ .request_network_settings = .{ .client_network_version = Profile.protocol_number } });
+    return encode(storage, control.RequestNetworkSettings{ .protocol_version = @intCast(protocol_version) });
 }
 
 pub fn login(storage: []u8) []const u8 {
-    return typed(storage, .{ .login = .{ .client_network_version = Profile.protocol_number, .connection_request = "fixture" } });
+    return encode(storage, control.Login{ .protocol_version = @intCast(protocol_version), .connection_request = "fixture" });
 }
 
 pub fn networkSettings(storage: []u8, algorithm: Compression, threshold: u16) []const u8 {
-    return typed(storage, .{ .network_settings = .{
-        .compression_threshold = threshold,
-        .compression_algorithm = algorithm,
-        .client_throttle_enabled = false,
-        .client_throttle_threshold = 0,
-        .client_throttle_scalar = 0,
-    } });
+    return encode(storage, control.NetworkSettings{ .compression_threshold = threshold, .compression_algorithm = algorithm });
 }
 
 pub fn playStatus(storage: []u8) []const u8 {
-    return raw(storage, id(.play_status), "\x00\x00\x00\x00");
+    return encode(storage, control.PlayStatus{ .status = control.PlayStatus.login_success });
 }
 
+/// An empty 1.26.60 pack offer, which Bedwire passes through undecoded.
 pub fn resourcePacksInfo(storage: []u8) []const u8 {
-    return typed(storage, .{ .resource_packs_info = .{
-        .resource_pack_required = false,
-        .has_addon_packs = false,
-        .has_scripts = false,
-        .force_disable_vibrant_visuals = false,
-        .world_template_id_and_version = .{ .pack_uuid = @splat(0), .pack_version = "" },
-        .resource_packs = .empty,
-    } });
+    return raw(storage, id(.resource_packs_info), &@as([22]u8, @splat(0)));
 }
 
 pub fn resourcePackStack(storage: []u8) []const u8 {
-    return typed(storage, .{ .resource_pack_stack = .{
-        .texture_pack_required = false,
-        .texture_pack_list = .empty,
-        .base_game_version = "",
-        .experiments = .{ .toggles = .empty, .experiments_ever_toggled = false },
-        .include_editor_packs = false,
-    } });
+    return raw(storage, id(.resource_pack_stack), &@as([9]u8, @splat(0)));
 }
 
 pub const runtime_id: u64 = 1;
@@ -73,15 +57,13 @@ pub fn startGame(storage: []u8) []const u8 {
 }
 
 pub fn playerSpawn(storage: []u8) []const u8 {
-    return typed(storage, .{ .play_status = .{ .status = .playerspawn } });
+    return encode(storage, control.PlayStatus{ .status = control.PlayStatus.player_spawn });
 }
 
 pub fn initialised(storage: []u8) []const u8 {
-    return typed(storage, .{ .set_local_player_as_initialised = .{ .player_id = runtime_id } });
+    return encode(storage, control.SetLocalPlayerAsInitialised{ .runtime_id = runtime_id });
 }
 
 pub fn stackFinished(storage: []u8) []const u8 {
-    return typed(storage, .{ .resource_pack_client_response = .{
-        .response = .{ .resource_pack_stack_finished = "resourcepackstackfinished" },
-    } });
+    return encode(storage, control.ResourcePackClientResponse{ .status = .resource_pack_stack_finished, .text = "resourcepackstackfinished" });
 }

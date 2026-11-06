@@ -1,8 +1,6 @@
 const std = @import("std");
 const phpz = @import("phpz");
 const native = @import("native");
-const protocol_php = @import("protocol.zig");
-const scratch = @import("scratch.zig");
 const root = @import("../root.zig");
 
 const c = phpz.c;
@@ -39,14 +37,16 @@ const Server = struct {
         return host;
     }
 
-    pub fn __construct(address: []const u8, port: i64, options: ?*Array) !Server {
+    pub fn __construct(address: []const u8, port: i64, options: *Array) !Server {
         const port_value = std.math.cast(u16, port) orelse return exception.argumentValueError(2, "must be between 0 and 65535", .{});
         var config: native.Config = .{
             .address = std.Io.net.IpAddress.parse(address, port_value) catch return exception.argumentValueError(1, "must be an IP address", .{}),
         };
         var path: [4096:0]u8 = undefined;
         var lists: Lists = .{};
-        if (options) |table| try parseOptions(table, &config, &path, &lists);
+        try parseOptions(options, &config, &path, &lists);
+        if (config.protocol_version == 0) return exception.argumentValueError(3, "must contain option \"protocol_version\"", .{});
+        if (config.minecraft_version.len == 0) return exception.argumentValueError(3, "must contain option \"minecraft_version\"", .{});
 
         const host = native.Host.start(gpa, config) catch |err| return switch (err) {
             error.InvalidConfig => exception.argumentValueError(3, "contains an out-of-range value", .{}),
@@ -104,41 +104,6 @@ const Server = struct {
     pub fn sendBatch(self: *Server, session: i64, packets: *Array) !bool {
         var slices: [native.max_packets_per_batch][]const u8 = undefined;
         return queued((try self.get()).send(@bitCast(session), try collect(packets, &slices, 2)));
-    }
-
-    /// Encodes packet objects and `[packet, fields]` pairs straight into the send queue next to already encoded
-    /// packets, skipping intermediate PHP strings.
-    pub fn sendPackets(self: *Server, session: i64, packets: *Array) !bool {
-        const host = try self.get();
-        if (packets.len() > native.max_packets_per_batch) return exception.argumentValueError(2, "has more than 1024 packets", .{});
-        const arena = scratch.begin();
-        defer scratch.end(arena);
-        const allocator = arena.allocator();
-        const items = try allocator.alloc(protocol_php.BatchItem, packets.len());
-        var typed: std.ArrayList(u8) = .empty;
-        var total: usize = 0;
-        var values = packets.fastValueIterator();
-        for (items) |*item| {
-            const value = deref(values.next().?);
-            if (Zval.raw.is(value, .string)) {
-                const encoded = Zval.raw.asUnchecked(value, .string);
-                if (encoded.len == 0) return exception.argumentValueError(2, "must not contain empty packets", .{});
-                item.* = .{ .encoded = encoded };
-            } else {
-                const entry = try protocol_php.itemOf(value, 2);
-                const start = typed.items.len;
-                try protocol_php.append(allocator, &typed, entry.kind, entry.fields, entry.sender, entry.target, 2);
-                item.* = .{ .typed = .{ .start = start, .end = typed.items.len } };
-            }
-            total += item.bytes(typed.items).len;
-        }
-        var batch = host.beginSend(@bitCast(session), items.len, total) catch |err| return queued(err);
-        for (items) |item| {
-            const bytes = item.bytes(typed.items);
-            @memcpy(batch.packet(bytes.len), bytes);
-        }
-        host.commitSend(batch);
-        return true;
     }
 
     /// Sends a batch body as Bedrock frames it, each packet behind its varint length, compressing it on the network thread.
@@ -277,6 +242,25 @@ fn parseOptions(table: *Array, config: *native.Config, path: *[4096:0]u8, lists:
             config.trusted_identity_keys = try stringList(value, "trusted_identity_keys", &lists.trusted_identity_keys);
             continue;
         }
+        if (std.mem.eql(u8, key, "protocol_version")) {
+            if (!Zval.raw.is(value, .int)) return exception.argumentTypeError(3, "option \"protocol_version\" must be int", .{});
+            const number = Zval.raw.asUnchecked(value, .int);
+            if (number < 1 or number > std.math.maxInt(i32)) return exception.argumentValueError(3, "option \"protocol_version\" must be between 1 and 2147483647", .{});
+            config.protocol_version = @intCast(number);
+            continue;
+        }
+        if (std.mem.eql(u8, key, "minecraft_version")) {
+            if (!Zval.raw.is(value, .string)) return exception.argumentTypeError(3, "option \"minecraft_version\" must be string", .{});
+            const text = Zval.raw.asUnchecked(value, .string);
+            if (text.len == 0 or text.len > native.max_minecraft_version or !std.unicode.utf8ValidateSlice(text))
+                return exception.argumentValueError(3, "option \"minecraft_version\" must be valid UTF-8 of 1 to 32 bytes", .{});
+            config.minecraft_version = text;
+            continue;
+        }
+        if (std.mem.eql(u8, key, "serverbound_packets")) {
+            config.serverbound_packets = try packetIds(value, "serverbound_packets");
+            continue;
+        }
         inline for (bool_options) |name| {
             if (std.mem.eql(u8, key, name)) {
                 if (!Zval.raw.is(value, .bool)) return exception.argumentTypeError(3, "option \"" ++ name ++ "\" must be bool", .{});
@@ -296,6 +280,20 @@ fn parseOptions(table: *Array, config: *native.Config, path: *[4096:0]u8, lists:
             } else return exception.argumentValueError(3, "has unknown option \"%.*s\"", named(key));
         }
     }
+}
+
+fn packetIds(value: *c.zval, comptime name: []const u8) !native.PacketIds {
+    if (!Zval.raw.is(value, .array)) return exception.argumentTypeError(3, "option \"" ++ name ++ "\" must be a list of ints", .{});
+    var ids: native.PacketIds = .empty;
+    var items = Zval.raw.asUnchecked(value, .array).fastValueIterator();
+    while (items.next()) |raw| {
+        const item = deref(raw);
+        if (!Zval.raw.is(item, .int)) return exception.argumentTypeError(3, "option \"" ++ name ++ "\" must be a list of ints", .{});
+        const id = std.math.cast(u10, Zval.raw.asUnchecked(item, .int)) orelse
+            return exception.argumentValueError(3, "option \"" ++ name ++ "\" must only contain IDs from 0 to 1023", .{});
+        ids.set(id);
+    }
+    return ids;
 }
 
 fn named(key: []const u8) struct { c_int, [*]const u8 } {

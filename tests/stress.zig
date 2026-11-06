@@ -25,7 +25,7 @@ test "start, traffic and stop cycles release every resource" {
         const joined = try support.join(host, .snappy);
         defer joined.client.destroy();
         var a: [64]u8 = undefined;
-        for (0..50) |_| try host.send(joined.session, &.{packets.raw(&a, packets.id(.text), "cycle")});
+        for (0..50) |_| try host.send(joined.session, &.{packets.raw(&a, packets.text, "cycle")});
         _ = try joined.client.expectPackets(50, 5000);
         host.stop(500);
     }
@@ -38,7 +38,7 @@ test "stopping during a flood neither deadlocks nor leaks" {
     defer joined.client.destroy();
     var a: [256]u8 = undefined;
     const body: [200]u8 = @splat('x');
-    const text = packets.raw(&a, packets.id(.text), &body);
+    const text = packets.raw(&a, packets.text, &body);
     for (0..500) |_| {
         joined.client.send(&.{text}) catch break;
         host.send(joined.session, &.{text}) catch {};
@@ -59,7 +59,7 @@ test "several clients join concurrently and keep their own ordering" {
 
     var storage: [4][50][16]u8 = undefined;
     for (clients, 0..) |entry, c| {
-        for (0..50) |i| try host.send(entry.session, &.{packets.raw(&storage[c][i], packets.id(.text), &.{ @intCast(c), @intCast(i) })});
+        for (0..50) |i| try host.send(entry.session, &.{packets.raw(&storage[c][i], packets.text, &.{ @intCast(c), @intCast(i) })});
     }
     for (clients, 0..) |entry, c| {
         const received = try entry.client.expectPackets(50, 5000);

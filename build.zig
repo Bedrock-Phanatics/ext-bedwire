@@ -115,7 +115,7 @@ pub fn build(b: *std.Build) void {
     const run_bench = b.addRunArtifact(bench);
     addLibraryPath(b, run_bench, target, library_path);
     run_bench.addPassthruArgs();
-    b.step("bench", "Run native protocol, session, NBT and transport benchmarks").dependOn(&run_bench.step);
+    b.step("bench", "Run native session, NBT and transport benchmarks").dependOn(&run_bench.step);
 
     const client = b.addExecutable(.{ .name = "bedwire-bench-client", .root_module = b.createModule(.{
         .root_source_file = b.path("tests/bench/client.zig"),
@@ -144,16 +144,6 @@ pub fn build(b: *std.Build) void {
     php_bench.has_side_effects = true;
     addLibraryPath(b, php_bench, target, library_path);
     b.step("bench-php", "Run PHP boundary and end-to-end benchmarks").dependOn(&php_bench.step);
-
-    const docs = b.addExecutable(.{ .name = "bedwire-docs", .root_module = b.createModule(.{
-        .root_source_file = b.path("tools/docs.zig"),
-        .target = b.graph.host,
-        .imports = &.{.{ .name = "bedwire", .module = b.dependency("bedwire", .{ .target = b.graph.host }).module("bedwire") }},
-    }) });
-    const run_docs = b.addRunArtifact(docs);
-    run_docs.addArgs(&.{ "docs/packets.md", "stubs/bedwire_generated.php" });
-    run_docs.setCwd(b.path("."));
-    b.step("docs", "Regenerate the packet reference and IDE stubs from protocol-zig").dependOn(&run_docs.step);
 }
 
 fn nativeImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, native_prefix: []const u8, libdeflate: bool, libc_file: ?[]const u8) [3]std.Build.Module.Import {

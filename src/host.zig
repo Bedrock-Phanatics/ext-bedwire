@@ -1,5 +1,6 @@
 //! The PHP-thread side of the network worker: it submits commands and drains events, and never blocks on the network.
 const std = @import("std");
+const bedwire = @import("bedwire");
 const nethernet = @import("nethernet");
 
 const Ring = @import("ring.zig").Ring;
@@ -17,9 +18,15 @@ pub const max_status_text = 256;
 pub const max_unreliable_bytes = 64 * 1024;
 pub const max_trusted_keys = 64;
 pub const max_ice_servers = 32;
+pub const max_minecraft_version = 32;
 
 pub const Config = struct {
     address: std.Io.net.IpAddress,
+    /// Advertised to clients and LAN discovery; the handshake itself does not depend on it.
+    protocol_version: u32 = 0,
+    minecraft_version: []const u8 = "",
+    /// Packet IDs clients may send in game besides the handshake ones, or null for any.
+    serverbound_packets: ?bedwire.Directions.IdSet = null,
     max_sessions: u32 = 1024,
     command_queue_bytes: usize = 16 * 1024 * 1024,
     event_queue_bytes: usize = 16 * 1024 * 1024,
@@ -60,6 +67,8 @@ pub const Config = struct {
 
     pub fn validate(self: Config) !void {
         if (self.max_sessions == 0 or self.max_sessions >= max_sessions_limit) return error.InvalidConfig;
+        if (self.protocol_version == 0 or self.protocol_version > std.math.maxInt(i32)) return error.InvalidConfig;
+        if (self.minecraft_version.len == 0 or self.minecraft_version.len > max_minecraft_version) return error.InvalidConfig;
         if (self.max_batch_bytes < 64 * 1024 or self.max_batch_bytes > 64 * 1024 * 1024) return error.InvalidConfig;
         if (self.command_queue_bytes < 1024 * 1024 or self.command_queue_bytes > 1 << 30) return error.InvalidConfig;
         if (self.event_queue_bytes < 2 * (self.max_batch_bytes + 64) or self.event_queue_bytes > 1 << 30) return error.InvalidConfig;
@@ -105,6 +114,9 @@ pub const Status = struct {
     name: Text = .{},
     level: Text = .{},
     max_players: u32 = 0,
+    /// Fixed before the worker starts.
+    protocol: u32 = 0,
+    minecraft_version: Text = .{},
     /// Bumped on every change so the worker refreshes the LAN advertisement only when needed.
     version: u32 = 0,
     game_type: i32 = 0,
@@ -251,6 +263,8 @@ pub const Host = struct {
         @memset(&self.shared.stats, .init(0));
         self.shared.status.io = self.io_handle;
         self.shared.status.max_players = config.max_sessions;
+        self.shared.status.protocol = config.protocol_version;
+        self.shared.status.minecraft_version.set(config.minecraft_version);
 
         self.worker = try Worker.create(allocator, self.io_handle, &self.shared, &self.config);
         errdefer self.worker.destroy();
@@ -271,6 +285,7 @@ pub const Host = struct {
         for (keys, self.config.trusted_identity_keys) |*copy, key| copy.* = try arena.dupe(u8, key);
         self.config.trusted_identity_keys = keys;
         if (self.config.bind_address) |address| self.config.bind_address = try arena.dupeSentinel(u8, address, 0);
+        self.config.minecraft_version = try arena.dupe(u8, self.config.minecraft_version);
     }
 
     pub fn io(self: *Host) std.Io {

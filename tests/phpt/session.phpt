@@ -8,9 +8,13 @@ if (!is_executable(__DIR__ . '/../../zig-out/bin/bedwire-bench-client' . (PHP_OS
 ?>
 --FILE--
 <?php
-use Bedwire\{PacketId, Protocol, Server};
+use Bedwire\Server;
 
-$server = new Server("127.0.0.1", 0, ["authentication" => false, "max_sessions" => 8]);
+require __DIR__ . '/server.inc';
+const TEXT = 9;
+
+// Text is the only gameplay packet the load client sends, so everything else is refused natively.
+$server = new Server("127.0.0.1", 0, ["max_sessions" => 8, "serverbound_packets" => [TEXT]] + OPTIONS);
 $server->setStatus("phpt", "world", 8);
 $client = proc_open([__DIR__ . '/../../zig-out/bin/bedwire-bench-client' . (PHP_OS_FAMILY === 'Windows' ? '.exe' : ''), (string) $server->getPort(), "3", "50", "1", "64"], [1 => ["pipe", "w"]], $pipes);
 
@@ -30,21 +34,23 @@ while ((count($disconnects) < 3 || count($connects) < 3) && microtime(true) < $d
         } elseif ($kind === Server::EVENT_DISCONNECT) {
             $disconnects[$session] = $data;
         } elseif ($kind === Server::EVENT_PACKET) {
-            if (Protocol::packetId($data) === PacketId::TEXT) {
+            if (packetId($data) === TEXT) {
                 $server->send($session, $data);
                 $echoed++;
                 continue;
             }
             $step = $steps[$session] = ($steps[$session] ?? -1) + 1;
             match ($step) {
-                0 => $server->sendPackets($session, [["network_settings", ["compression_threshold" => 256, "compression_algorithm" => 0, "client_throttle_enabled" => false, "client_throttle_threshold" => 0, "client_throttle_scalar" => 0.0]]]),
-                1 => $server->acceptLogin($session, $der) && $server->sendPackets($session, [
-                    ["play_status", ["status" => 0]],
-                    ["resource_packs_info", ["resource_pack_required" => false, "has_addon_packs" => false, "has_scripts" => false, "force_disable_vibrant_visuals" => false, "world_template_id_and_version" => ["pack_uuid" => str_repeat("\0", 16), "pack_version" => ""], "resource_packs" => []]],
-                    ["resource_pack_stack", ["texture_pack_required" => false, "texture_pack_list" => [], "base_game_version" => "", "experiments" => ["toggles" => [], "experiments_ever_toggled" => false], "include_editor_packs" => false]],
+                // NetworkSettings: threshold, zlib, then throttling off.
+                0 => $server->send($session, packet(143, pack("vvCCg", 256, 0, 0, 0, 0.0))),
+                // PlayStatus success, then an empty 1.26.60 pack offer and stack.
+                1 => $server->acceptLogin($session, $der) && $server->sendBatch($session, [
+                    packet(2, pack("N", 0)),
+                    packet(6, str_repeat("\0", 22)),
+                    packet(7, str_repeat("\0", 9)),
                 ]),
-                // StartGame only needs the player's unique and runtime IDs here.
-                2 => $server->sendPackets($session, ["\x0b\x02\x01", ["play_status", ["status" => 3]]]),
+                // StartGame only needs the player's unique and runtime IDs here, then PlayStatus spawn.
+                2 => $server->sendBatch($session, [packet(11, "\x02\x01"), packet(2, pack("N", 3))]),
                 default => null,
             };
         }

@@ -12,6 +12,8 @@ pub const loopback = std.Io.net.IpAddress{ .ip4 = .loopback(0) };
 pub fn config(overrides: anytype) native.Config {
     var result: native.Config = .{
         .address = loopback,
+        .protocol_version = packets.protocol_version,
+        .minecraft_version = packets.minecraft_version,
         .authentication = false,
         .max_sessions = 16,
         .max_batch_bytes = 64 * 1024,

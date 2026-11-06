@@ -1,4 +1,4 @@
-//! Native benchmarks. Pass section names (codec, session, nbt, ring, transport) to run a subset.
+//! Native benchmarks. Pass section names (session, nbt, ring, transport) to run a subset.
 const std = @import("std");
 const bedwire = @import("bedwire");
 const nethernet = @import("nethernet");
@@ -6,7 +6,7 @@ const nbt = @import("nbt");
 const native = @import("native");
 const peer_mod = @import("peer.zig");
 
-const protocol = bedwire.protocol;
+const control = bedwire.control;
 const Peer = peer_mod.Peer;
 const allocator = std.heap.smp_allocator;
 const nowNs = peer_mod.nowNs;
@@ -15,7 +15,6 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     const only = args[1..];
-    if (selected(only, "codec")) try codec(io);
     if (selected(only, "session")) try session(io);
     if (selected(only, "nbt")) try nbtBench(io);
     if (selected(only, "ring")) try ringThroughput(io);
@@ -55,71 +54,45 @@ fn measure(io: std.Io, name: []const u8, bytes_per_op: usize, context: anytype, 
     report(name, ops, elapsed, bytes_per_op * ops);
 }
 
+/// Gameplay packets shaped like 1.26.60's MovePlayer, Text and LevelChunk; Bedwire never decodes them.
 const Samples = struct {
     move: []const u8,
     text: []const u8,
     chunk: []const u8,
 
-    fn init(storage: *[3][24 * 1024]u8) Samples {
+    fn init(storage: *[3][24 * 1024]u8) !Samples {
         var chunk_data: [16 * 1024]u8 = undefined;
         // Chunk payloads are mostly palette runs, which compress like this.
         for (&chunk_data, 0..) |*byte, i| byte.* = if (i % 64 < 48) 0 else @truncate(i *% 2654435761 >> 13);
-        return .{
-            .move = peer_mod.typed(&storage[0], .{ .move_player = .{
-                .player_runtime_id = 81234,
-                .position = .{ .x = 128.5, .y = 64, .z = -312.25 },
-                .rotation = .{ .x = 12.5, .y = 270 },
-                .y_head_rotation = 270,
-                .position_mode = @fromBackingInt(0),
-                .on_ground = true,
-                .riding_runtime_id = 0,
-                .teleport_data = null,
-                .tick = 123456,
-            } }),
-            .text = peer_mod.typed(&storage[1], .{ .text = .{
-                .localize = false,
-                .body = .{ .author_and_message = .{ .message_type = .chat, .player_name = "Steve", .message = "hello from the benchmark, this is a chat line" } },
-                .senders_xuid = "2535412345678901",
-                .platform_id = "",
-                .filtered_message = null,
-            } }),
-            .chunk = peer_mod.typed(&storage[2], .{ .level_chunk = .{
-                .chunk_position = .{ .x = 10, .z = -4 },
-                .dimension_id = 0,
-                .sub_chunks_count = 8,
-                .client_request_sub_chunk_limit = null,
-                .cache_enabled = false,
-                .cache_metadata = .empty,
-                .is_client_biome_update = false,
-                .serialized_chunk_data = &chunk_data,
-            } }),
-        };
+
+        var move: control.Writer = .init(&storage[0]);
+        try move.varU32(19);
+        try move.varU64(81234);
+        for ([_]f32{ 128.5, 64, -312.25, 12.5, 270, 270 }) |value| try move.int(u32, @bitCast(value), .little);
+        try move.byte(0);
+        try move.boolean(true);
+        try move.varU64(0);
+        try move.varU64(123456);
+
+        var text: control.Writer = .init(&storage[1]);
+        try text.varU32(peer_mod.stamp_id);
+        try text.boolean(false);
+        try text.byte(1);
+        for ([_][]const u8{ "Steve", "hello from the benchmark, this is a chat line", "2535412345678901", "" }) |field| try text.bytes(field);
+        try text.boolean(false);
+
+        var chunk: control.Writer = .init(&storage[2]);
+        try chunk.varU32(58);
+        try chunk.varI64(10);
+        try chunk.varI64(-4);
+        try chunk.varI64(0);
+        try chunk.varU32(8);
+        try chunk.boolean(false);
+        try chunk.bytes(&chunk_data);
+
+        return .{ .move = move.written(), .text = text.written(), .chunk = chunk.written() };
     }
 };
-
-fn codec(io: std.Io) !void {
-    std.debug.print("\n== protocol-zig codec (native, borrowed decode) ==\n", .{});
-    var storage: [3][24 * 1024]u8 = undefined;
-    const samples = Samples.init(&storage);
-    const Case = struct { bytes: []const u8, out: [24 * 1024]u8 = undefined };
-    inline for (.{ "move_player", "text", "level_chunk 16 KiB" }, .{ samples.move, samples.text, samples.chunk }) |name, bytes| {
-        var case: Case = .{ .bytes = bytes };
-        try measure(io, "decode " ++ name, bytes.len, &case, struct {
-            fn run(c: *Case) !void {
-                const decoded = try protocol.Current.decodeBorrowed(c.bytes, .{});
-                std.mem.doNotOptimizeAway(&decoded);
-            }
-        }.run);
-        try measure(io, "decode+encode " ++ name, bytes.len, &case, struct {
-            fn run(c: *Case) !void {
-                const decoded = try protocol.typed.decode(c.bytes, .{});
-                var writer = protocol.Writer.init(&c.out);
-                try protocol.typed.encode(&writer, decoded);
-                std.mem.doNotOptimizeAway(writer.written().ptr);
-            }
-        }.run);
-    }
-}
 
 const SessionCase = struct {
     server: *bedwire.Session,
@@ -131,7 +104,7 @@ const SessionCase = struct {
 fn session(io: std.Io) !void {
     std.debug.print("\n== Bedwire sessions, gameplay mix of 20 moves, 5 chat lines and 1 chunk ==\n", .{});
     var storage: [3][24 * 1024]u8 = undefined;
-    const samples = Samples.init(&storage);
+    const samples = try Samples.init(&storage);
     var batch: [26][]const u8 = undefined;
     for (batch[0..20]) |*packet| packet.* = samples.move;
     for (batch[20..25]) |*packet| packet.* = samples.text;
@@ -291,33 +264,19 @@ const Server = struct {
         if (!entry.found_existing) entry.value_ptr.* = 0;
         defer entry.value_ptr.* += 1;
         switch (entry.value_ptr.*) {
-            0 => try self.host.send(id, &.{peer_mod.typed(&self.storage[0], .{ .network_settings = .{
-                .compression_threshold = 256,
-                .compression_algorithm = .zlib,
-                .client_throttle_enabled = false,
-                .client_throttle_threshold = 0,
-                .client_throttle_scalar = 0,
-            } })}),
+            0 => try self.host.send(id, &.{try control.encode(&self.storage[0], control.NetworkSettings{ .compression_threshold = 256, .compression_algorithm = .zlib })}),
             1 => {
                 try self.host.acceptLogin(id, &self.key);
-                try self.host.send(id, &.{ peer_mod.raw(&self.storage[1], protocol.Current.packetId(.play_status).?, "\x00\x00\x00\x00"), peer_mod.typed(&self.storage[2], .{ .resource_packs_info = .{
-                    .resource_pack_required = false,
-                    .has_addon_packs = false,
-                    .has_scripts = false,
-                    .force_disable_vibrant_visuals = false,
-                    .world_template_id_and_version = .{ .pack_uuid = @splat(0), .pack_version = "" },
-                    .resource_packs = .empty,
-                } }), peer_mod.typed(&self.storage[3], .{ .resource_pack_stack = .{
-                    .texture_pack_required = false,
-                    .texture_pack_list = .empty,
-                    .base_game_version = "",
-                    .experiments = .{ .toggles = .empty, .experiments_ever_toggled = false },
-                    .include_editor_packs = false,
-                } }) });
+                // Empty 1.26.60 pack offer and stack.
+                try self.host.send(id, &.{
+                    try control.encode(&self.storage[1], control.PlayStatus{ .status = control.PlayStatus.login_success }),
+                    peer_mod.raw(&self.storage[2], control.PacketKind.resource_packs_info.id(), &@as([22]u8, @splat(0))),
+                    peer_mod.raw(&self.storage[3], control.PacketKind.resource_pack_stack.id(), &@as([9]u8, @splat(0))),
+                });
             },
             2 => try self.host.send(id, &.{
-                peer_mod.raw(&self.storage[4], protocol.Current.packetId(.start_game).?, "\x02\x01"),
-                peer_mod.typed(&self.storage[5], .{ .play_status = .{ .status = .playerspawn } }),
+                peer_mod.raw(&self.storage[4], control.PacketKind.start_game.id(), "\x02\x01"),
+                try control.encode(&self.storage[5], control.PlayStatus{ .status = control.PlayStatus.player_spawn }),
             }),
             else => {},
         }
@@ -327,6 +286,8 @@ const Server = struct {
 fn startHost(sessions: usize) !*native.Host {
     return native.Host.start(allocator, .{
         .address = .{ .ip4 = .loopback(0) },
+        .protocol_version = peer_mod.protocol_version,
+        .minecraft_version = peer_mod.minecraft_version,
         .authentication = false,
         .max_sessions = @intCast(@max(sessions + 8, 16)),
         .packet_rate = 0,

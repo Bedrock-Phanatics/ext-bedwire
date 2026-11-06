@@ -11,7 +11,6 @@ const Statistics = host_mod.Statistics;
 const Event = host_mod.Event;
 const Command = host_mod.Command;
 const Reason = host_mod.Reason;
-const Profile = bedwire.protocol.Current;
 const Authority = nethernet.identity_issuer.Authority;
 
 const Phase = enum { free, open, draining };
@@ -140,6 +139,8 @@ pub const Worker = struct {
     active_len: usize = 0,
     draining: usize = 0,
     group: [host_mod.max_packets_per_batch][]const u8 = undefined,
+    /// Sessions point here, so it lives as long as the worker.
+    directions: ?bedwire.Directions,
 
     stats: Statistics = .{},
     closed_bytes_received: u64 = 0,
@@ -240,6 +241,7 @@ pub const Worker = struct {
             .free = free,
             .free_len = free.len,
             .active = active,
+            .directions = if (config.serverbound_packets) |ids| .{ .client = ids } else null,
         };
         self.next_tick_ms = self.clock() + config.stats_interval_ms;
         self.advertise();
@@ -341,6 +343,7 @@ pub const Worker = struct {
         const Copy = struct {
             threadlocal var name: host_mod.Status.Text = .{};
             threadlocal var level: host_mod.Status.Text = .{};
+            threadlocal var version: host_mod.Status.Text = .{};
         };
         const current = &shared.status;
         // Copied per HTTP thread so PHP can change the status while a response is being written.
@@ -348,10 +351,11 @@ pub const Worker = struct {
         defer current.mutex.unlock(current.io);
         Copy.name = current.name;
         Copy.level = current.level;
+        Copy.version = current.minecraft_version;
         return .{
             .name = Copy.name.slice(),
-            .protocol = Profile.protocol_number,
-            .version = Profile.minecraft_version,
+            .protocol = current.protocol,
+            .version = Copy.version.slice(),
             .level = Copy.level.slice(),
             .players = @intCast(@min(shared.stats[0].load(.monotonic), current.max_players)),
             .max_players = current.max_players,
@@ -428,8 +432,8 @@ pub const Worker = struct {
         if (lan.version == current.version and lan.players == players) return;
         lan.discovery.setServerData(.{
             .server_name = current.name.slice(),
-            .protocol = @intCast(Profile.protocol_number),
-            .version = Profile.minecraft_version,
+            .protocol = @intCast(self.config.protocol_version),
+            .version = self.config.minecraft_version,
             .level_name = current.level.slice(),
             .game_type = current.game_type,
             .player_count = @intCast(players),
@@ -462,7 +466,12 @@ pub const Worker = struct {
         };
         const session = bedwire.Session.init(.server, .{
             .pool = &self.pool,
-            .policy = .{ .encryption = .disabled, .batch_header = false },
+            .protocol_version = self.config.protocol_version,
+            .policy = .{
+                .encryption = .disabled,
+                .batch_header = false,
+                .directions = if (self.directions) |*directions| directions else null,
+            },
         }) catch {
             self.stats.connections_refused += 1;
             connection.destroy();
@@ -666,9 +675,8 @@ pub const Worker = struct {
 
     fn verifyLogin(self: *Worker, slot: *Slot, packet: bedwire.Packet) !bedwire.Identity {
         const keys = try self.currentKeys();
-        const decoded = try slot.session.decodePacket(packet);
-        if (decoded.value != .typed or decoded.value.typed != .login) return error.InvalidProfile;
-        const request = try bedwire.auth.decodeConnectionRequest(decoded.value.typed.login.connection_request, self.limits);
+        const login = try slot.session.decodeControl(bedwire.control.Login, packet);
+        const request = try bedwire.auth.decodeConnectionRequest(login.connection_request, self.limits);
         var envelope = try bedwire.auth.parseChainEnvelope(self.allocator, request.chain_data, self.limits);
         defer envelope.deinit();
         if (envelope.authentication_type != 0) return error.Unauthenticated;
@@ -825,12 +833,12 @@ pub const Worker = struct {
     fn sendPackets(self: *Worker, slot: *Slot, packets: []const []const u8) !void {
         var len: usize = 0;
         for (packets) |packet| {
-            const header = bedwire.protocol.packet.decode(packet, .{ .max_packet_bytes = packet.len }) catch {
+            const envelope = bedwire.control.parse(packet) catch {
                 self.stats.packets_rejected += 1;
                 continue;
             };
-            const kind = Profile.packetKind(header.header.packet_id);
-            if (!slot.session.state.permits(Profile.features, .server, kind)) {
+            const kind = bedwire.PacketKind.fromId(envelope.header.packet_id);
+            if (!slot.session.state.permits(slot.session.features(), .server, kind)) {
                 self.stats.packets_rejected += 1;
                 continue;
             }
@@ -842,7 +850,7 @@ pub const Worker = struct {
             try self.flushGroup(slot, len);
             len = 0;
             if (kind == .network_settings) {
-                slot.session.negotiateFromSettings(.{ .kind = kind, .id = header.header.packet_id, .bytes = packet }) catch |err| {
+                slot.session.negotiateFromSettings(.{ .kind = kind, .id = envelope.header.packet_id, .bytes = packet }) catch |err| {
                     self.fail(slot, .protocol);
                     return err;
                 };

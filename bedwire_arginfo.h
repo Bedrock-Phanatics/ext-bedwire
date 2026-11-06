@@ -1,10 +1,10 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: 057ec3847f492f16371d05276c218a15d25c3ed7 */
+ * Stub hash: 462d6c85c150b5643d0fc42666c7a7c0affa94b9 */
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Bedwire_Server___construct, 0, 0, 2)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Bedwire_Server___construct, 0, 0, 3)
 	ZEND_ARG_TYPE_INFO(0, address, IS_STRING, 0)
 	ZEND_ARG_TYPE_INFO(0, port, IS_LONG, 0)
-	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, options, IS_ARRAY, 0, "[]")
+	ZEND_ARG_TYPE_INFO(0, options, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Server_stop, 0, 0, IS_VOID, 0)
@@ -39,8 +39,6 @@ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Server_sendBatch, 
 	ZEND_ARG_TYPE_INFO(0, packets, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
 
-#define arginfo_class_Bedwire_Server_sendPackets arginfo_class_Bedwire_Server_sendBatch
-
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Server_sendRawBatch, 0, 2, _IS_BOOL, 0)
 	ZEND_ARG_TYPE_INFO(0, session, IS_LONG, 0)
 	ZEND_ARG_TYPE_INFO(0, batch, IS_STRING, 0)
@@ -72,61 +70,8 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Server_getStatistics, 0, 0, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Bedwire_Protocol___construct, 0, 0, 0)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Bedwire_Nbt___construct, 0, 0, 0)
 ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Protocol_id, 0, 1, IS_LONG, 0)
-	ZEND_ARG_TYPE_INFO(0, name, IS_STRING, 0)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Protocol_name, 0, 1, IS_STRING, 1)
-	ZEND_ARG_TYPE_INFO(0, id, IS_LONG, 0)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Protocol_direction, 0, 1, IS_LONG, 0)
-	ZEND_ARG_TYPE_MASK(0, packet, MAY_BE_LONG|MAY_BE_STRING, NULL)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Protocol_header, 0, 1, IS_ARRAY, 0)
-	ZEND_ARG_TYPE_INFO(0, bytes, IS_STRING, 0)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Protocol_packetId, 0, 1, IS_LONG, 0)
-	ZEND_ARG_TYPE_INFO(0, bytes, IS_STRING, 0)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_MASK_EX(arginfo_class_Bedwire_Protocol_decode, 0, 1, MAY_BE_ARRAY|MAY_BE_OBJECT|MAY_BE_NULL)
-	ZEND_ARG_TYPE_INFO(0, bytes, IS_STRING, 0)
-	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, maxValues, IS_LONG, 0, "0")
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Protocol_decodeMany, 0, 1, IS_ARRAY, 0)
-	ZEND_ARG_TYPE_INFO(0, packets, IS_ARRAY, 0)
-	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, maxValues, IS_LONG, 0, "0")
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Protocol_encode, 0, 2, IS_STRING, 0)
-	ZEND_ARG_TYPE_MASK(0, packet, MAY_BE_LONG|MAY_BE_STRING, NULL)
-	ZEND_ARG_TYPE_MASK(0, fields, MAY_BE_ARRAY|MAY_BE_OBJECT, NULL)
-	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, senderSubClient, IS_LONG, 0, "0")
-	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, targetSubClient, IS_LONG, 0, "0")
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Protocol_encodeMany, 0, 1, IS_ARRAY, 0)
-	ZEND_ARG_TYPE_INFO(0, packets, IS_ARRAY, 0)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Protocol_encodeBatch, 0, 1, IS_STRING, 0)
-	ZEND_ARG_TYPE_INFO(0, packets, IS_ARRAY, 0)
-ZEND_END_ARG_INFO()
-
-#define arginfo_class_Bedwire_Protocol_schema arginfo_class_Bedwire_Server_getStatistics
-
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Protocol_bind, 0, 1, IS_VOID, 0)
-	ZEND_ARG_TYPE_INFO(0, types, IS_ARRAY, 0)
-ZEND_END_ARG_INFO()
-
-#define arginfo_class_Bedwire_Nbt___construct arginfo_class_Bedwire_Protocol___construct
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Bedwire_Nbt_transcode, 0, 3, IS_STRING, 0)
 	ZEND_ARG_TYPE_INFO(0, data, IS_STRING, 0)
@@ -201,7 +146,6 @@ ZEND_METHOD(Bedwire_Server, setStatus);
 ZEND_METHOD(Bedwire_Server, poll);
 ZEND_METHOD(Bedwire_Server, send);
 ZEND_METHOD(Bedwire_Server, sendBatch);
-ZEND_METHOD(Bedwire_Server, sendPackets);
 ZEND_METHOD(Bedwire_Server, sendRawBatch);
 ZEND_METHOD(Bedwire_Server, sendUnreliable);
 ZEND_METHOD(Bedwire_Server, eventSignal);
@@ -209,19 +153,6 @@ ZEND_METHOD(Bedwire_Server, waitForEvents);
 ZEND_METHOD(Bedwire_Server, disconnect);
 ZEND_METHOD(Bedwire_Server, acceptLogin);
 ZEND_METHOD(Bedwire_Server, getStatistics);
-ZEND_METHOD(Bedwire_Protocol, __construct);
-ZEND_METHOD(Bedwire_Protocol, id);
-ZEND_METHOD(Bedwire_Protocol, name);
-ZEND_METHOD(Bedwire_Protocol, direction);
-ZEND_METHOD(Bedwire_Protocol, header);
-ZEND_METHOD(Bedwire_Protocol, packetId);
-ZEND_METHOD(Bedwire_Protocol, decode);
-ZEND_METHOD(Bedwire_Protocol, decodeMany);
-ZEND_METHOD(Bedwire_Protocol, encode);
-ZEND_METHOD(Bedwire_Protocol, encodeMany);
-ZEND_METHOD(Bedwire_Protocol, encodeBatch);
-ZEND_METHOD(Bedwire_Protocol, schema);
-ZEND_METHOD(Bedwire_Protocol, bind);
 ZEND_METHOD(Bedwire_Nbt, __construct);
 ZEND_METHOD(Bedwire_Nbt, transcode);
 ZEND_METHOD(Bedwire_Nbt, length);
@@ -243,7 +174,6 @@ static const zend_function_entry class_Bedwire_Server_methods[] = {
 	ZEND_ME(Bedwire_Server, poll, arginfo_class_Bedwire_Server_poll, ZEND_ACC_PUBLIC)
 	ZEND_ME(Bedwire_Server, send, arginfo_class_Bedwire_Server_send, ZEND_ACC_PUBLIC)
 	ZEND_ME(Bedwire_Server, sendBatch, arginfo_class_Bedwire_Server_sendBatch, ZEND_ACC_PUBLIC)
-	ZEND_ME(Bedwire_Server, sendPackets, arginfo_class_Bedwire_Server_sendPackets, ZEND_ACC_PUBLIC)
 	ZEND_ME(Bedwire_Server, sendRawBatch, arginfo_class_Bedwire_Server_sendRawBatch, ZEND_ACC_PUBLIC)
 	ZEND_ME(Bedwire_Server, sendUnreliable, arginfo_class_Bedwire_Server_sendUnreliable, ZEND_ACC_PUBLIC)
 	ZEND_ME(Bedwire_Server, eventSignal, arginfo_class_Bedwire_Server_eventSignal, ZEND_ACC_PUBLIC)
@@ -251,23 +181,6 @@ static const zend_function_entry class_Bedwire_Server_methods[] = {
 	ZEND_ME(Bedwire_Server, disconnect, arginfo_class_Bedwire_Server_disconnect, ZEND_ACC_PUBLIC)
 	ZEND_ME(Bedwire_Server, acceptLogin, arginfo_class_Bedwire_Server_acceptLogin, ZEND_ACC_PUBLIC)
 	ZEND_ME(Bedwire_Server, getStatistics, arginfo_class_Bedwire_Server_getStatistics, ZEND_ACC_PUBLIC)
-	ZEND_FE_END
-};
-
-static const zend_function_entry class_Bedwire_Protocol_methods[] = {
-	ZEND_ME(Bedwire_Protocol, __construct, arginfo_class_Bedwire_Protocol___construct, ZEND_ACC_PRIVATE)
-	ZEND_ME(Bedwire_Protocol, id, arginfo_class_Bedwire_Protocol_id, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
-	ZEND_ME(Bedwire_Protocol, name, arginfo_class_Bedwire_Protocol_name, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
-	ZEND_ME(Bedwire_Protocol, direction, arginfo_class_Bedwire_Protocol_direction, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
-	ZEND_ME(Bedwire_Protocol, header, arginfo_class_Bedwire_Protocol_header, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
-	ZEND_ME(Bedwire_Protocol, packetId, arginfo_class_Bedwire_Protocol_packetId, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
-	ZEND_ME(Bedwire_Protocol, decode, arginfo_class_Bedwire_Protocol_decode, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
-	ZEND_ME(Bedwire_Protocol, decodeMany, arginfo_class_Bedwire_Protocol_decodeMany, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
-	ZEND_ME(Bedwire_Protocol, encode, arginfo_class_Bedwire_Protocol_encode, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
-	ZEND_ME(Bedwire_Protocol, encodeMany, arginfo_class_Bedwire_Protocol_encodeMany, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
-	ZEND_ME(Bedwire_Protocol, encodeBatch, arginfo_class_Bedwire_Protocol_encodeBatch, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
-	ZEND_ME(Bedwire_Protocol, schema, arginfo_class_Bedwire_Protocol_schema, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
-	ZEND_ME(Bedwire_Protocol, bind, arginfo_class_Bedwire_Protocol_bind, ZEND_ACC_PUBLIC|ZEND_ACC_STATIC)
 	ZEND_FE_END
 };
 
@@ -302,34 +215,6 @@ static zend_class_entry *register_class_Bedwire_BackpressureException(zend_class
 
 	INIT_NS_CLASS_ENTRY(ce, "Bedwire", "BackpressureException", NULL);
 	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_Bedwire_Exception, ZEND_ACC_FINAL);
-
-	return class_entry;
-}
-
-static zend_class_entry *register_class_Bedwire_PacketException(zend_class_entry *class_entry_Bedwire_Exception)
-{
-	zend_class_entry ce, *class_entry;
-
-	INIT_NS_CLASS_ENTRY(ce, "Bedwire", "PacketException", NULL);
-	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_Bedwire_Exception, ZEND_ACC_FINAL);
-
-	zval property_field_default_value;
-	ZVAL_NULL(&property_field_default_value);
-	zend_string *property_field_name = zend_string_init("field", sizeof("field") - 1, 1);
-	zend_declare_typed_property(class_entry, property_field_name, &property_field_default_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_STRING|MAY_BE_NULL));
-	zend_string_release(property_field_name);
-
-	zval property_observed_default_value;
-	ZVAL_NULL(&property_observed_default_value);
-	zend_string *property_observed_name = zend_string_init("observed", sizeof("observed") - 1, 1);
-	zend_declare_typed_property(class_entry, property_observed_name, &property_observed_default_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG|MAY_BE_NULL));
-	zend_string_release(property_observed_name);
-
-	zval property_limit_default_value;
-	ZVAL_NULL(&property_limit_default_value);
-	zend_string *property_limit_name = zend_string_init("limit", sizeof("limit") - 1, 1);
-	zend_declare_typed_property(class_entry, property_limit_name, &property_limit_default_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG|MAY_BE_NULL));
-	zend_string_release(property_limit_name);
 
 	return class_entry;
 }
@@ -422,44 +307,6 @@ static zend_class_entry *register_class_Bedwire_Server(void)
 	zend_string *const_REASON_TIMEOUT_name = zend_string_init_interned("REASON_TIMEOUT", sizeof("REASON_TIMEOUT") - 1, 1);
 	zend_declare_typed_class_constant(class_entry, const_REASON_TIMEOUT_name, &const_REASON_TIMEOUT_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
 	zend_string_release(const_REASON_TIMEOUT_name);
-
-	return class_entry;
-}
-
-static zend_class_entry *register_class_Bedwire_Protocol(void)
-{
-	zend_class_entry ce, *class_entry;
-
-	INIT_NS_CLASS_ENTRY(ce, "Bedwire", "Protocol", class_Bedwire_Protocol_methods);
-	class_entry = zend_register_internal_class_with_flags(&ce, NULL, ZEND_ACC_FINAL|ZEND_ACC_NOT_SERIALIZABLE);
-
-	zval const_CLIENTBOUND_value;
-	ZVAL_LONG(&const_CLIENTBOUND_value, 1);
-	zend_string *const_CLIENTBOUND_name = zend_string_init_interned("CLIENTBOUND", sizeof("CLIENTBOUND") - 1, 1);
-	zend_declare_typed_class_constant(class_entry, const_CLIENTBOUND_name, &const_CLIENTBOUND_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
-	zend_string_release(const_CLIENTBOUND_name);
-
-	zval const_SERVERBOUND_value;
-	ZVAL_LONG(&const_SERVERBOUND_value, 2);
-	zend_string *const_SERVERBOUND_name = zend_string_init_interned("SERVERBOUND", sizeof("SERVERBOUND") - 1, 1);
-	zend_declare_typed_class_constant(class_entry, const_SERVERBOUND_name, &const_SERVERBOUND_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
-	zend_string_release(const_SERVERBOUND_name);
-
-	zval const_BIDIRECTIONAL_value;
-	ZVAL_LONG(&const_BIDIRECTIONAL_value, 3);
-	zend_string *const_BIDIRECTIONAL_name = zend_string_init_interned("BIDIRECTIONAL", sizeof("BIDIRECTIONAL") - 1, 1);
-	zend_declare_typed_class_constant(class_entry, const_BIDIRECTIONAL_name, &const_BIDIRECTIONAL_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
-	zend_string_release(const_BIDIRECTIONAL_name);
-
-	return class_entry;
-}
-
-static zend_class_entry *register_class_Bedwire_PacketId(void)
-{
-	zend_class_entry ce, *class_entry;
-
-	INIT_NS_CLASS_ENTRY(ce, "Bedwire", "PacketId", NULL);
-	class_entry = zend_register_internal_class_with_flags(&ce, NULL, ZEND_ACC_FINAL|ZEND_ACC_NOT_SERIALIZABLE);
 
 	return class_entry;
 }
