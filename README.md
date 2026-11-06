@@ -1,12 +1,11 @@
 # ext-bedwire
 
-The native networking and protocol layer for Quark. It is a PHP extension built with [phpz](https://github.com/happystraw/phpz), and it provides three things:
+The native networking layer for Quark. It is a PHP extension built with [phpz](https://github.com/happystraw/phpz), and it provides two things:
 
 - **Network:** a dedicated network thread runs the NetherNet transport ([nethernet-zig](https://github.com/Bedrock-Phanatics/nethernet-zig)). That covers HTTP signaling, LAN discovery and WebRTC data channels, and the thread also verifies logins. Sessions are handled by [Bedwire](https://github.com/Bedrock-Phanatics/bedwire): batching, compression, stage checks and rate limits.
-- **Protocol:** every Bedrock packet is decoded and encoded by [protocol-zig](https://github.com/Bedrock-Phanatics/protocol-zig). PHP sees the packets as arrays.
 - **NBT:** PocketMine's NBT tag trees are read and written by [nbt-zig](https://github.com/Bedrock-Phanatics/nbt-zig), one native call per document.
 
-Gameplay, players, events and plugins stay in PHP. RakNet is not supported: NetherNet is the only transport.
+Gameplay, players, events, plugins and packet encoding and decoding stay in PHP: events carry each game packet as bytes, and PHP sends already encoded packets. Natively the extension only reads the version-independent handshake packets it needs (network settings, login, play status, resource pack responses and the like). RakNet is not supported: NetherNet is the only transport.
 
 ## Requirements
 
@@ -17,7 +16,7 @@ Gameplay, players, events and plugins stay in PHP. RakNet is not supported: Neth
   - Pass its install prefix with `-Dnative-prefix=...`, or set `NETHERNET_NATIVE_PREFIX`.
   - The extension links it as a shared library, so `libdatachannel.so` or `libdatachannel.dll` must be on the loader path at runtime.
 
-All dependencies are pinned in `build.zig.zon`. protocol-zig comes only through Bedwire, and nbt-zig is shared with protocol-zig, so each library is compiled once.
+All dependencies are pinned in `build.zig.zon`.
 
 ## Build
 
@@ -30,9 +29,8 @@ zig build -Doptimize=ReleaseFast -Dnative-prefix="$PREFIX" -Dphp-include-dir="$(
 | --- | --- |
 | `zig build test` | Zig unit, integration and stress tests over real NetherNet connections (no PHP needed) |
 | `zig build phpt -Dphp=...` | PHPT tests against the built extension, including real NetherNet sessions |
-| `zig build bench [-- codec session nbt ring transport]` | Native benchmarks |
+| `zig build bench [-- session nbt ring transport]` | Native benchmarks |
 | `zig build bench-php -Dphp=...` | PHP-side benchmarks. Set `POCKETMINE_VENDOR` to compare against pocketmine/nbt |
-| `zig build docs` | Regenerates `docs/packets.md` and `stubs/bedwire_generated.php` from protocol-zig |
 
 Other build options:
 
@@ -42,7 +40,9 @@ Other build options:
 
 Regenerate `bedwire_arginfo.h` with `php gen_stub.php bedwire.stub.php` after editing the stub.
 
-After moving Bedwire to a new protocol, run `zig build docs` and copy protocol-zig's `tests/corpus.txt` to `tests/fixtures/corpus.txt`.
+### Updating Minecraft versions
+
+A new Minecraft release needs no native rebuild. Pass its numbers through the `protocol_version` and `minecraft_version` options, update the packet codec in PHP, and adjust `serverbound_packets` if the IDs clients may send changed. Only a change to the handshake contract (the packet header, the fixed IDs of the handshake packets, or the fields Bedwire reads from them) needs a new Bedwire and extension build.
 
 ## Architecture
 
@@ -51,7 +51,7 @@ PHP thread                           network thread (one per Server)
 Bedwire\Server ── command ring ──▶  NetherNet endpoint and LAN listeners
                ◀─── event ring ───   Bedwire sessions: framing, compression, stage checks,
                                      rate limits, login verification
-Bedwire\Protocol, Bedwire\Nbt run on the calling PHP thread with no network involved.
+Bedwire\Nbt runs on the calling PHP thread with no network involved.
 ```
 
 **Queues and memory**
@@ -73,6 +73,7 @@ Bedwire\Protocol, Bedwire\Nbt run on the calling PHP thread with no network invo
 **Sessions**
 - Session IDs are `generation << 16 | slot`, so a stale ID never reaches a reused slot.
 - Bedwire drives the stage machine from the traffic itself. Packets the server's current stage forbids are dropped and counted.
+- With `serverbound_packets`, an in-game client packet whose ID is not listed is a protocol violation and closes the session with `REASON_PROTOCOL`. Without it, any ID other than the handshake ones is accepted once the client is in game.
 - Vanilla NetherNet framing is used: no `0xfe` batch header, and no Bedrock encryption on top of DTLS.
 
 **Authentication**
@@ -83,9 +84,12 @@ Bedwire\Protocol, Bedwire\Nbt run on the calling PHP thread with no network invo
 ## Usage
 
 ```php
-use Bedwire\{PacketId, Protocol, Server};
+use Bedwire\Server;
 
 $server = new Server("0.0.0.0", 19132, [
+    "protocol_version" => 2225,                // required, announced in the server status and LAN advertisement
+    "minecraft_version" => "1.26.60",          // required
+    "serverbound_packets" => $serverboundIds,  // optional list of packet IDs clients may send in game
     "max_sessions" => 500,
     "identity_file" => "server-identity.der", // keeps the server identity across restarts
     "lan_port" => 7551,                       // answer LAN discovery like a vanilla world
@@ -107,19 +111,11 @@ while ($running) {
 }
 
 function onPacket(int $session, string $bytes): void {
-    // Read only the header to dispatch, and decode the packets you handle.
-    if (Protocol::packetId($bytes) === PacketId::TEXT) {
-        $text = Protocol::decode($bytes);
-        echo $text["body"]["author_and_message"]["message"] ?? "", "\n";
-    }
+    // The packet starts with its varint header; decode it with your PHP packet codec.
 }
 
-// Encode and queue in one call, next to packets that are already encoded. No intermediate PHP strings are created.
-$server->sendPackets($session, [
-    ["play_status", ["status" => 0]],
-    ["text", ["localize" => false, "body" => ["message_only" => ["message_type" => 0, "message" => "hi"]], "senders_xuid" => "", "platform_id" => ""]],
-]);
-// Or send packets that are already encoded, as one batch.
+$server->send($session, $encoded);
+// Several already encoded packets as one batch.
 $server->sendBatch($session, [$encodedA, $encodedB]);
 // Or a batch body as Bedrock frames it (varint length + packet, repeated), compressed on the network thread.
 $server->sendRawBatch($session, $batchBody, $offset = 0);
@@ -133,7 +129,7 @@ $server->stop(2000);
 
 - `send*`, `disconnect` and `acceptLogin` return `false` for an unknown or closed session.
 - When a bounded queue is full they throw `Bedwire\BackpressureException`.
-- Invalid arguments throw `ValueError` or `TypeError`. Error messages name the failing field, e.g. `body.author_and_message.message must be of type string, int given`.
+- Invalid arguments throw `ValueError` or `TypeError`, including a missing or invalid `protocol_version` or `minecraft_version`.
 - A start failure throws `Bedwire\Exception`.
 - A `Server` belongs to the thread that created it. Several servers may exist at once.
 
@@ -141,6 +137,9 @@ $server->stop(2000);
 
 | Option | Default | |
 | --- | --- | --- |
+| `protocol_version` | required | Protocol number, 1 to 2147483647, shown in the server status and LAN advertisement |
+| `minecraft_version` | required | Game version string, 1 to 32 bytes of UTF-8, shown in the same places |
+| `serverbound_packets` | any | List of packet IDs (0 to 1023) clients may send in game besides the handshake packets |
 | `max_sessions` | 1024 | Concurrent sessions, up to 65535 |
 | `authentication` | true | Verify identities at signaling and logins natively. Off means PHP calls `acceptLogin()` |
 | `identity_file` | none | PKCS#8 server identity, created if missing |
@@ -164,33 +163,6 @@ $server->stop(2000);
 
 `getStatistics()` returns sessions, traffic, packets, rejections, disconnects by cause, refused connections, receive pauses, event stalls and queue usage.
 
-### Protocol
-
-`Bedwire\Protocol` exposes protocol-zig's packets.
-
-- **Lookup and metadata:** `id()`, `name()`, `direction()` (`CLIENTBOUND`, `SERVERBOUND` or `BIDIRECTIONAL`), `header()` and `packetId()`.
-- **Codecs:**
-  - `decode($bytes, $maxValues = 0)` returns the packet's fields, or `null` for an ID this protocol does not define. A nonzero `$maxValues` caps the array entries the packet may expand into, so untrusted input cannot turn a few megabytes into a huge array tree.
-  - `encode($packet, $fields, $sender = 0, $target = 0)` takes a packet ID or name, and preserves sub-client IDs.
-  - `decodeMany()` and `encodeMany()` do the same for whole lists in one call. `encodeMany()` takes `[packet, fields]` pairs, optionally followed by the sender and target sub-client IDs, or packet objects of bound classes.
-  - `encodeBatch()` takes the same pairs and objects mixed with already encoded packets, and returns them as one batch body for `Server::sendRawBatch()`.
-  - `bind()` maps schema names, packet names or struct names, to PHP classes. Bound structs then decode into objects of those classes and encode from them, with each field read and written through its property slot under its camelCase name. A packet whose only field is a struct is flattened into its class unless that struct is bound itself. Every class is checked first: it must be a plain instantiable class whose properties are declared, not hooked, and typed to accept what is written to them. A union whose variants are all distinct structs is, once every variant is bound, decoded into its variant's object and encoded from it, so its property must accept each variant class. Variant classes of one union must not extend one another. Bindings last for the request and each thread has its own.
-- **Schema:** `schema()` lists every packet with its ID, direction and fields, and every struct, union and enum they reach, under stable unique names. Code generators use it to build typed wrappers from the types the extension itself walks.
-- **Constants:** `Protocol::VERSION` and `Protocol::MINECRAFT_VERSION`. `Bedwire\PacketId::<NAME>` has one constant per packet, registered at startup from protocol-zig.
-
-The field layout of every packet is listed in [docs/packets.md](docs/packets.md), generated from the same types the extension uses. For IDEs, include [stubs/bedwire_generated.php](stubs/bedwire_generated.php).
-
-How values are represented:
-
-- Structs are arrays keyed by field name, or objects of their bound class.
-- A union is an array with exactly one key naming its variant, or its variant's object when bound that way.
-- Lists are PHP lists, and enums are ints.
-- Optional fields may be `null` or left out.
-- NBT fields hold raw network NBT.
-- Unsigned 64-bit values wrap into PHP's signed int.
-
-Encoding validates every field and every protocol bound before writing, and writes straight into a PHP string of the exact size. Decoding validates the whole packet first and rejects trailing bytes. Malformed input throws `Bedwire\PacketException` and never crashes. When a count or length broke a bound, its `field` (a schema field such as `Emote.emote_id`, or a decode limit such as `max_string_bytes`), `observed` and `limit` properties say which and by how much; otherwise they are null.
-
 ### NBT
 
 `Bedwire\Nbt` reads and writes [pocketmine/nbt](https://github.com/pmmp/NBT) `TreeRoot` and `Tag` objects directly.
@@ -211,13 +183,6 @@ All numbers below were taken on WSL2 Ubuntu with a 12-thread host, ReleaseFast, 
 
 ### Native
 
-| Workload | Result |
-| --- | --- |
-| Decode `move_player` | 46 ns |
-| Decode + encode `move_player` | 136 ns |
-| Decode `text` | 79 ns |
-| Decode + encode a 16 KiB `level_chunk` | 371 ns |
-
 Session batch, 17.5 KiB: 20 moves, 5 chat lines and 1 chunk.
 
 | Backend | On the wire | Encode | Encode + decode |
@@ -237,12 +202,6 @@ NBT, a 2.6 KB chest block entity:
 The command/event ring moves 41 M records/s across threads.
 
 ### From PHP
-
-| Call | Time |
-| --- | --- |
-| `Protocol::decode` `move_player` | 183 ns |
-| `Protocol::encode` `move_player` | 228 ns |
-| `Protocol::packetId` | 29 ns |
 
 NBT, using the same pocketmine/nbt objects with byte-identical output:
 
@@ -268,13 +227,12 @@ These loopback measurements put both ends in one process, so the RSS figures fro
 
 ## Testing
 
-- **Zig:** 37 tests, run on Linux and Windows, all over real WebRTC connections. They cover:
+- **Zig:** 43 tests, run on Linux and Windows, all over real WebRTC connections. They cover:
   - login, batching, compression and large-frame reassembly;
   - stale IDs, malformed and out-of-stage input, rate limits and backpressure;
   - login timeouts, graceful disconnects and shutdown;
   - LAN discovery and joins, overlapping servers, and connection churn.
-- **PHPT:** 9 tests, run on PHP 8.4 NTS and ZTS (release, debug, and ASan/UBSan/LeakSanitizer builds) and on Windows ZTS. They cover:
-  - every packet in protocol-zig's corpus, which must round-trip byte for byte through PHP;
+- **PHPT:** 8 tests, run on PHP 8.4 NTS and ZTS (release, debug, and ASan/UBSan/LeakSanitizer builds) and on Windows ZTS. They cover:
   - NBT trees, arguments and lifecycle;
   - real NetherNet sessions through `Bedwire\Server`.
 

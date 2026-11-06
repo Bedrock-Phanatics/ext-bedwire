@@ -20,7 +20,7 @@ jobs:
         with:
           version: 0.17.0
       - uses: ./.github/actions/native
-      - run: zig fmt --check build.zig build.zig.zon src tests tools
+      - run: zig fmt --check build.zig build.zig.zon src tests
       - run: zig build test -Doptimize=${{ matrix.optimize }} --summary all
 
   php:
@@ -54,13 +54,13 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
-      - name: Pinned revisions only, one protocol-zig and one nbt-zig
+      - name: Pinned revisions only, no protocol-zig and one nbt-zig
         run: |
           ! grep -E '\?ref=(main|master|dev)"' build.zig.zon
           ! grep -E '\.path = ' build.zig.zon
           grep -E '[#/][0-9a-f]{40}"' build.zig.zon | wc -l | grep -qx 4
           zig build --fetch
-          test "$(ls zig-pkg | grep -c '^bedrock_protocol-')" -eq 1
+          test "$(ls zig-pkg | grep -c '^bedrock_protocol-')" -eq 0
           test "$(ls zig-pkg | grep -c '^nbt-')" -eq 1
 
   stress:
