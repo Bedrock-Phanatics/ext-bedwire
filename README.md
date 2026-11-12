@@ -147,7 +147,7 @@ $server->stop(2000);
 | `packet_rate` | 2000 | Packets per second per session (0 disables). Exceeding it disconnects with `REASON_OVERLOAD` |
 | `byte_rate` | 1 MiB | Compressed bytes per second per session, with room for one 4 MiB frame (0 disables). Exceeding it disconnects with `REASON_OVERLOAD` |
 | `login_timeout_ms` | 10000 | Time to finish logging in before `REASON_TIMEOUT` |
-| `max_negotiations`, `http_workers` | 16, 32 | Concurrent joins in negotiation, and HTTP signaling workers. A request must arrive within 2 s |
+| `max_negotiations`, `http_workers` | 64, 32 | Concurrent joins in negotiation, and HTTP signaling workers. A request must arrive within 2 s |
 | `max_negotiations_per_address`, `max_connections_per_address` | 4, 8 | Per client IP (or IPv6 /64) caps on joins in negotiation and open HTTP connections. 0 is unlimited, loopback is exempt |
 | `max_batch_bytes` | 4 MiB | Largest decompressed batch in either direction |
 | `command_queue_bytes`, `event_queue_bytes` | 16 MiB | Ring sizes |
@@ -156,6 +156,7 @@ $server->stop(2000);
 | `port_range_begin`, `port_range_end` | any | UDP ports for WebRTC |
 | `udp_mux` | false | Share one UDP socket across connections. Not verified against vanilla clients |
 | `ice_servers` | none | STUN/TURN servers, e.g. `stun:stun.l.google.com:19302`, for servers behind NAT |
+| `advertise_addresses` | none | Public IP literals offered as ICE candidates on the WebRTC socket's own port, for a server behind a 1:1 NAT, port forward or container. Forward the same external UDP ports as `port_range_begin`..`port_range_end` |
 | `bind_address` | any | Local address WebRTC binds its UDP sockets to |
 | `trusted_identity_keys` | none | DER public keys whose self-signed identities pass authenticated signaling (proxies) |
 | `unreliable_events` | false | Deliver unreliable-channel messages as `EVENT_UNRELIABLE` instead of dropping them |

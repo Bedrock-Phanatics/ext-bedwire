@@ -297,6 +297,18 @@ test "authenticated servers refuse anonymous clients at signaling" {
     try testing.expectEqual(@as(?native.Delivered, null), host.nextEvent());
 }
 
+test "advertised addresses are validated and don't disturb local joins" {
+    for ([_][]const u8{ "203.0.113.7:19132", "example.com", "0.0.0.0", "::ffff:203.0.113.7" }) |bad|
+        try testing.expectError(error.InvalidConfig, start(.{ .advertise_addresses = &.{bad} }));
+    try testing.expectError(error.InvalidConfig, start(.{ .advertise_addresses = &.{ "203.0.113.7", "203.0.113.7" } }));
+
+    const host = try start(.{ .advertise_addresses = &.{ "203.0.113.7", "2001:db8::7" } });
+    defer host.destroy();
+    const joined = try support.join(host, .zlib);
+    joined.client.destroy();
+    try support.expectDisconnect(host, joined.session, .remote);
+}
+
 test "the signaling endpoint reports the status PHP sets" {
     const host = try start(.{});
     defer host.destroy();

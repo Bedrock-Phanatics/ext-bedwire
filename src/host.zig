@@ -43,7 +43,7 @@ pub const Config = struct {
     /// Keeps the server identity across restarts so players only confirm it once.
     identity_file: ?[]const u8 = null,
     /// Concurrent WebRTC negotiations, which bounds how many players can be joining at once.
-    max_negotiations: u32 = 16,
+    max_negotiations: u32 = 64,
     /// Per client IP, or /64 for IPv6, so one address can't take every negotiation or HTTP worker. 0 is unlimited, loopback is exempt.
     max_negotiations_per_address: u32 = 4,
     max_connections_per_address: u32 = 8,
@@ -58,6 +58,9 @@ pub const Config = struct {
     lan_port: u16 = 0,
     /// STUN and TURN servers, such as "stun:stun.l.google.com:19302", for servers behind NAT.
     ice_servers: []const [:0]const u8 = &.{},
+    /// Public IP literals a 1:1 NAT, port forward or container exposes the server on. They are offered on the
+    /// ICE socket's own port, so the same external UDP ports must reach `port_range_begin`..`port_range_end`.
+    advertise_addresses: []const []const u8 = &.{},
     /// Local address WebRTC binds its UDP sockets to.
     bind_address: ?[:0]const u8 = null,
     /// DER public keys, such as those of trusted proxies, whose self-signed identities are accepted at signaling.
@@ -79,6 +82,7 @@ pub const Config = struct {
         if ((self.port_range_begin == 0) != (self.port_range_end == 0) or self.port_range_begin > self.port_range_end) return error.InvalidConfig;
         if (self.ice_servers.len > max_ice_servers or self.trusted_identity_keys.len > max_trusted_keys) return error.InvalidConfig;
         for (self.ice_servers) |server| if (server.len == 0 or server.len > 512) return error.InvalidConfig;
+        _ = nethernet.advertise.Addresses.parse(self.advertise_addresses) catch return error.InvalidConfig;
         for (self.trusted_identity_keys) |key| if (key.len == 0 or key.len > 512) return error.InvalidConfig;
         if (self.bind_address) |address| if (address.len == 0 or address.len > 64) return error.InvalidConfig;
         const reserve = @as(usize, self.max_sessions) * Worker.obligation_bytes;
@@ -281,6 +285,9 @@ pub const Host = struct {
         const servers = try arena.alloc([:0]const u8, self.config.ice_servers.len);
         for (servers, self.config.ice_servers) |*copy, server| copy.* = try arena.dupeSentinel(u8, server, 0);
         self.config.ice_servers = servers;
+        const advertised = try arena.alloc([]const u8, self.config.advertise_addresses.len);
+        for (advertised, self.config.advertise_addresses) |*copy, address| copy.* = try arena.dupe(u8, address);
+        self.config.advertise_addresses = advertised;
         const keys = try arena.alloc([]const u8, self.config.trusted_identity_keys.len);
         for (keys, self.config.trusted_identity_keys) |*copy, key| copy.* = try arena.dupe(u8, key);
         self.config.trusted_identity_keys = keys;

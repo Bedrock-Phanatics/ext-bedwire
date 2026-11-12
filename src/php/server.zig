@@ -189,6 +189,7 @@ const bool_options = .{ "authentication", "udp_mux", "unreliable_events" };
 /// Option lists borrow PHP's strings, which outlive the constructor call that copies them.
 const Lists = struct {
     ice_servers: [native.max_ice_servers][:0]const u8 = undefined,
+    advertise_addresses: [native.advertise.maximum_addresses][]const u8 = undefined,
     trusted_identity_keys: [native.max_trusted_keys][]const u8 = undefined,
 };
 
@@ -236,6 +237,12 @@ fn parseOptions(table: *Array, config: *native.Config, path: *[4096:0]u8, lists:
         }
         if (std.mem.eql(u8, key, "ice_servers")) {
             config.ice_servers = try stringList(value, "ice_servers", &lists.ice_servers);
+            continue;
+        }
+        if (std.mem.eql(u8, key, "advertise_addresses")) {
+            config.advertise_addresses = try stringList(value, "advertise_addresses", &lists.advertise_addresses);
+            _ = native.advertise.Addresses.parse(config.advertise_addresses) catch
+                return exception.argumentValueError(3, "option \"advertise_addresses\" must list distinct public IP addresses without ports", .{});
             continue;
         }
         if (std.mem.eql(u8, key, "trusted_identity_keys")) {

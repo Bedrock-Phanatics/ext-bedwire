@@ -13,6 +13,7 @@ pub const Statistics = host.Statistics;
 pub const max_packets_per_batch = host.max_packets_per_batch;
 pub const max_status_text = host.max_status_text;
 pub const max_ice_servers = host.max_ice_servers;
+pub const advertise = @import("nethernet").advertise;
 pub const max_trusted_keys = host.max_trusted_keys;
 pub const max_minecraft_version = host.max_minecraft_version;
 pub const PacketIds = @import("bedwire").Directions.IdSet;

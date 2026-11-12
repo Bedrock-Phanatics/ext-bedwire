@@ -58,6 +58,11 @@ attempt(fn() => $server->sendRawBatch(1, "	", 3));
 attempt(fn() => $server->sendUnreliable(1, str_repeat("a", 70000)));
 attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["ice_servers" => "stun:x"] + OPTIONS));
 attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["ice_servers" => [""]] + OPTIONS));
+attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["advertise_addresses" => "203.0.113.7"] + OPTIONS));
+attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["advertise_addresses" => ["203.0.113.7:19132"]] + OPTIONS));
+attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["advertise_addresses" => ["example.com"]] + OPTIONS));
+attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["advertise_addresses" => ["0.0.0.0"]] + OPTIONS));
+attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["advertise_addresses" => ["203.0.113.7", "203.0.113.7"]] + OPTIONS));
 attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["bind_address" => "not an ip"] + OPTIONS));
 attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["trusted_identity_keys" => array_fill(0, 65, "k")] + OPTIONS));
 attempt(fn() => $server->setStatus(str_repeat("a", 300), "level", 10));
@@ -106,6 +111,11 @@ ValueError: Bedwire\Server::sendRawBatch(): Argument #3 ($offset) is past the en
 ValueError: Bedwire\Server::sendUnreliable(): Argument #2 ($payload) exceeds the maximum batch size
 TypeError: Bedwire\Server::__construct(): Argument #3 ($options) option "ice_servers" must be a list of strings
 ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "ice_servers" has an empty or invalid entry
+TypeError: Bedwire\Server::__construct(): Argument #3 ($options) option "advertise_addresses" must be a list of strings
+ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "advertise_addresses" must list distinct public IP addresses without ports
+ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "advertise_addresses" must list distinct public IP addresses without ports
+ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "advertise_addresses" must list distinct public IP addresses without ports
+ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "advertise_addresses" must list distinct public IP addresses without ports
 ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "bind_address" must be an IP address
 ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "trusted_identity_keys" has too many entries
 ValueError: Bedwire\Server::setStatus(): Argument #1 ($name) must be valid UTF-8 of at most 256 bytes
