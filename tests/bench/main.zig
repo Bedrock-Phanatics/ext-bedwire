@@ -19,8 +19,15 @@ pub fn main(init: std.process.Init) !void {
     if (selected(only, "nbt")) try nbtBench(io);
     if (selected(only, "ring")) try ringThroughput(io);
     if (selected(only, "transport")) {
-        for ([_]usize{ 1, 50, 200 }) |count| try transport(io, count, 20, 5);
-        try idle(io, 50, 5);
+        var custom = false;
+        for (only) |arg| if (std.fmt.parseInt(usize, arg, 10)) |count| {
+            custom = true;
+            try transport(io, count, 20, 5);
+        } else |_| {};
+        if (!custom) {
+            for ([_]usize{ 1, 50, 200 }) |count| try transport(io, count, 20, 5);
+            try idle(io, 50, 5);
+        }
     }
 }
 
@@ -357,7 +364,22 @@ const Group = struct {
     }
 };
 
+const FileTime = extern struct { low: u32, high: u32 };
+extern "kernel32" fn OpenThread(access: u32, inherit: i32, id: u32) callconv(.winapi) ?*anyopaque;
+extern "kernel32" fn GetThreadTimes(thread: *anyopaque, creation: *FileTime, exit: *FileTime, kernel: *FileTime, user: *FileTime) callconv(.winapi) i32;
+extern "kernel32" fn CloseHandle(handle: *anyopaque) callconv(.winapi) i32;
+
 fn threadCpuNs(io: std.Io, tid: u64) u64 {
+    if (@import("builtin").os.tag == .windows) {
+        // THREAD_QUERY_LIMITED_INFORMATION
+        const thread = OpenThread(0x0800, 0, @intCast(tid)) orelse return 0;
+        defer _ = CloseHandle(thread);
+        var times: [4]FileTime = undefined;
+        if (GetThreadTimes(thread, &times[0], &times[1], &times[2], &times[3]) == 0) return 0;
+        var total: u64 = 0;
+        for (times[2..]) |time| total += (@as(u64, time.high) << 32 | time.low) * 100;
+        return total;
+    }
     if (@import("builtin").os.tag != .linux) return 0;
     var path: [64]u8 = undefined;
     const name = std.fmt.bufPrint(&path, "/proc/self/task/{d}/stat", .{tid}) catch return 0;
@@ -375,11 +397,8 @@ fn threadCpuNs(io: std.Io, tid: u64) u64 {
     return ticks * 10 * std.time.ns_per_ms;
 }
 
-fn processCpuNs() u64 {
-    const usage = std.posix.getrusage(std.posix.rusage.SELF);
-    const user: u64 = @intCast(usage.utime.sec * std.time.ns_per_s + usage.utime.usec * std.time.ns_per_us);
-    const system: u64 = @intCast(usage.stime.sec * std.time.ns_per_s + usage.stime.usec * std.time.ns_per_us);
-    return user + system;
+fn processCpuNs(io: std.Io) u64 {
+    return @intCast(std.Io.Clock.cpu_process.now(io).nanoseconds);
 }
 
 fn rssBytes(io: std.Io) u64 {
@@ -436,7 +455,7 @@ fn transport(io: std.Io, sessions: usize, rate_hz: u32, seconds: u32) !void {
 
     for (clients) |*group| group.sending.store(true, .release);
     const worker = host.shared.worker_thread.load(.acquire);
-    const cpu_start = processCpuNs();
+    const cpu_start = processCpuNs(io);
     const worker_start = threadCpuNs(io, worker);
     const start = nowNs(io);
     const end = start + @as(u64, seconds) * std.time.ns_per_s;
@@ -447,7 +466,7 @@ fn transport(io: std.Io, sessions: usize, rate_hz: u32, seconds: u32) !void {
     const elapsed = nowNs(io) - start;
     for (clients) |*group| group.sending.store(false, .release);
     const worker_ns = threadCpuNs(io, worker) - worker_start;
-    const process_ns = processCpuNs() - cpu_start;
+    const process_ns = processCpuNs(io) - cpu_start;
 
     var latencies: std.ArrayList(u64) = .empty;
     defer latencies.deinit(allocator);
