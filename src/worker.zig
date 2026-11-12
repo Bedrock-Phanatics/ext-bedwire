@@ -16,8 +16,11 @@ const Authority = nethernet.identity_issuer.Authority;
 const Phase = enum { free, open, draining };
 
 const Slot = struct {
+    owner: *Worker = undefined,
     generation: u32 = 0,
     phase: Phase = .free,
+    /// Has a deadline to meet, so it is polled even when nothing arrived.
+    timed: bool = false,
     /// Position in `Worker.active`.
     position: u32 = 0,
     connection: *nethernet.Connection = undefined,
@@ -133,6 +136,12 @@ pub const Worker = struct {
     pool: bedwire.BufferPool,
     limits: bedwire.Limits,
     slots: []Slot,
+    /// One bit per slot with something to read, set from NetherNet's threads so a turn skips idle sessions.
+    ready: []std.atomic.Value(usize),
+    /// Slots with `Slot.timed` set.
+    timed: usize = 0,
+    /// Poll every session on the next turn.
+    sweep: bool = true,
     free: []u32,
     free_len: usize,
     active: []u32,
@@ -167,6 +176,9 @@ pub const Worker = struct {
         const slots = try allocator.alloc(Slot, config.max_sessions);
         errdefer allocator.free(slots);
         @memset(slots, .{});
+        const ready = try allocator.alloc(std.atomic.Value(usize), (slots.len + @bitSizeOf(usize) - 1) / @bitSizeOf(usize));
+        errdefer allocator.free(ready);
+        @memset(ready, .init(0));
         const free = try allocator.alloc(u32, config.max_sessions);
         errdefer allocator.free(free);
         for (free, 0..) |*index, i| index.* = @intCast(config.max_sessions - 1 - i);
@@ -239,6 +251,7 @@ pub const Worker = struct {
             .pool = pool,
             .limits = limits,
             .slots = slots,
+            .ready = ready,
             .free = free,
             .free_len = free.len,
             .active = active,
@@ -266,6 +279,7 @@ pub const Worker = struct {
         }
         self.allocator.free(self.active);
         self.allocator.free(self.free);
+        self.allocator.free(self.ready);
         self.allocator.free(self.slots);
         self.pool.deinit();
         self.allocator.destroy(self);
@@ -305,7 +319,7 @@ pub const Worker = struct {
         if (self.draining != 0) until = @min(until, now + drain_poll_ms);
         if (self.shutdown_deadline) |end| until = @min(until, end);
         var earliest = std.Io.Clock.awake.now(self.io).addDuration(.fromMilliseconds(@intCast(until -| now)));
-        for (self.active[0..self.active_len]) |index| earlier(&earliest, self.slots[index].connection.waitDeadline());
+        if (self.timed != 0) for (self.active[0..self.active_len]) |index| earlier(&earliest, self.slots[index].connection.waitDeadline());
         if (self.lan) |lan| {
             earlier(&earliest, lan.discovery.tickDeadline());
             for (lan.listener.pending) |pending| if (pending) |connection| earlier(&earliest, connection.waitDeadline());
@@ -486,6 +500,7 @@ pub const Worker = struct {
         const generation = if (slot.generation +% 1 == 0) 1 else slot.generation +% 1;
         const now = self.clock();
         slot.* = .{
+            .owner = self,
             .generation = generation,
             .phase = .open,
             .position = @intCast(self.active_len),
@@ -499,7 +514,7 @@ pub const Worker = struct {
         };
         self.active[self.active_len] = index;
         self.active_len += 1;
-        connection.peer.subscribe(&self.shared.wakeup);
+        connection.setCallback(.{ .context = slot, .call = onReady });
 
         std.mem.writeInt(u64, record[0..8], self.sessionId(slot), .little);
         std.mem.writeInt(u16, record[8..10], @intCast(address.len), .little);
@@ -522,6 +537,7 @@ pub const Worker = struct {
         }
         self.shared.live[index].store(0, .release);
         if (slot.phase == .draining) self.draining -= 1;
+        if (slot.timed) self.timed -= 1;
 
         const callback = slot.connection.callbackStats();
         self.stats.receive_pauses += callback.receive_pauses;
@@ -564,22 +580,62 @@ pub const Worker = struct {
 
     fn pumpConnections(self: *Worker) bool {
         var busy = false;
-        var i: usize = 0;
-        while (i < self.active_len) {
-            const slot = &self.slots[self.active[i]];
-            switch (self.pump(slot)) {
-                .idle => i += 1,
-                .busy => {
-                    busy = true;
-                    i += 1;
-                },
-                .released => {},
+        // A deadline passes without an event, and the periodic sweep covers a mark that was ever missed.
+        if (self.sweep or self.timed != 0) {
+            self.sweep = false;
+            var i: usize = 0;
+            while (i < self.active_len) {
+                switch (self.pumpSlot(&self.slots[self.active[i]])) {
+                    .idle => i += 1,
+                    .busy => {
+                        busy = true;
+                        i += 1;
+                    },
+                    .released => {},
+                }
+            }
+            return busy;
+        }
+        for (self.ready, 0..) |*word, base| {
+            if (word.load(.monotonic) == 0) continue;
+            var bits = word.swap(0, .acquire);
+            while (bits != 0) : (bits &= bits - 1) {
+                const slot = &self.slots[base * @bitSizeOf(usize) + @ctz(bits)];
+                if (slot.phase != .free and self.pumpSlot(slot) == .busy) busy = true;
             }
         }
         return busy;
     }
 
-    fn pump(self: *Worker, slot: *Slot) enum { idle, busy, released } {
+    fn markReady(self: *Worker, slot: *const Slot) void {
+        const index = self.indexOf(slot);
+        _ = self.ready[index / @bitSizeOf(usize)].fetchOr(@as(usize, 1) << @intCast(index % @bitSizeOf(usize)), .release);
+    }
+
+    /// Runs on a NetherNet thread with the connection locked. The mark comes first, a wakeup ahead of it could be lost.
+    fn onReady(context: *anyopaque) void {
+        const slot: *Slot = @ptrCast(@alignCast(context));
+        const self = slot.owner;
+        self.markReady(slot);
+        self.shared.wakeup.signal(self.io);
+    }
+
+    fn pumpSlot(self: *Worker, slot: *Slot) Pumped {
+        const result = self.pump(slot);
+        if (result == .released) return result;
+        // Whatever is left queued must be polled again without waiting for another arrival.
+        if (result == .busy or self.stalled) self.markReady(slot);
+        const timed = slot.connection.waitDeadline() != .none;
+        if (timed != slot.timed) {
+            slot.timed = timed;
+            if (timed) self.timed += 1 else self.timed -= 1;
+        }
+        return result;
+    }
+
+    const Pumped = enum { idle, busy, released };
+
+    fn pump(self: *Worker, slot: *Slot) Pumped {
         for (0..messages_per_turn) |_| {
             if (slot.phase == .open and self.shared.events.available() < self.reserveObligations(0) + self.config.max_batch_bytes) {
                 // Leave messages queued so NetherNet pauses the sender until PHP catches up.
@@ -752,6 +808,7 @@ pub const Worker = struct {
         self.sumTraffic();
         self.advertise();
         self.drainClosing(now);
+        self.sweep = true;
     }
 
     fn drainClosing(self: *Worker, now: u64) void {

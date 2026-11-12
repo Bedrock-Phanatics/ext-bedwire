@@ -217,6 +217,52 @@ test "a stalled event consumer throttles peers instead of dropping packets" {
     try testing.expectEqual(@as(u64, 0), host.statistics().overload_disconnects);
 }
 
+// A long statistics interval keeps the periodic sweep away, so every session below is served from its ready mark.
+test "sessions are served on arrival without the periodic sweep" {
+    const host = try start(.{ .stats_interval_ms = 60_000, .packet_rate = 0, .byte_rate = 0, .max_batch_bytes = 2 * 1024 * 1024, .event_queue_bytes = 8 * 1024 * 1024, .command_queue_bytes = 8 * 1024 * 1024 });
+    defer host.destroy();
+    const first = try support.join(host, .none);
+    defer first.client.destroy();
+    const second = try support.join(host, .zlib);
+
+    var storage: [64]u8 = undefined;
+    for ([_]@TypeOf(first){ first, second, first }) |joined| {
+        const text = packets.raw(&storage, packets.text, "marked");
+        try joined.client.send(&.{text});
+        try support.expectPacket(host, joined.session, text);
+    }
+
+    // A message in several fragments sets a reassembly deadline.
+    const body = try gpa.alloc(u8, 900 * 1024);
+    defer gpa.free(body);
+    @memset(body, 'f');
+    const big_storage = try gpa.alloc(u8, body.len + 8);
+    defer gpa.free(big_storage);
+    const big = packets.raw(big_storage, packets.text, body);
+    try first.client.send(&.{big});
+    try support.expectPacket(host, first.session, big);
+
+    // More than the event queue takes at once, so the session stalls and has to be picked up again.
+    var block: [1024]u8 = undefined;
+    const sent = 7000;
+    for (0..sent) |i| {
+        std.mem.writeInt(u32, block[0..4], @intCast(i), .little);
+        var frame: [1100]u8 = undefined;
+        try first.client.send(&.{packets.raw(&frame, packets.text, &block)});
+    }
+    try host.io().sleep(.fromMilliseconds(300), .awake);
+    try testing.expect(host.statistics().event_stalls > 0);
+    for (0..sent) |i| {
+        const event = try support.nextEvent(host, 10_000);
+        defer event.deinit();
+        if (event != .packet) return error.UnexpectedEvent;
+        try testing.expectEqual(@as(u32, @intCast(i)), std.mem.readInt(u32, event.packet.bytes[1..5], .little));
+    }
+
+    second.client.destroy();
+    try support.expectDisconnect(host, second.session, .remote);
+}
+
 test "invalid send arguments are rejected before queueing" {
     const host = try start(.{});
     defer host.destroy();
