@@ -217,6 +217,7 @@ pub const Worker = struct {
             .request_read_timeout_ms = 2000,
             .maximum_pending_accepts = config.max_negotiations,
             .status_provider = .{ .context = shared, .get = status },
+            .advertise_addresses = config.advertise_addresses,
             .wakeup = &shared.wakeup,
         });
         errdefer listener.destroy();
@@ -275,6 +276,8 @@ pub const Worker = struct {
         defer self.finish();
         while (true) {
             const token = self.shared.wakeup.prepare();
+            // Set again below while the event ring is still short, otherwise a past stall would keep the loop from spinning.
+            self.stalled = false;
             var busy = self.processCommands();
             self.acceptConnections();
             busy = self.pumpConnections() or busy;
