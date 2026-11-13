@@ -74,7 +74,7 @@ pub const Config = struct {
         if (self.minecraft_version.len == 0 or self.minecraft_version.len > max_minecraft_version) return error.InvalidConfig;
         if (self.max_batch_bytes < 64 * 1024 or self.max_batch_bytes > 64 * 1024 * 1024) return error.InvalidConfig;
         if (self.command_queue_bytes < 1024 * 1024 or self.command_queue_bytes > 1 << 30) return error.InvalidConfig;
-        if (self.event_queue_bytes < 2 * (self.max_batch_bytes + 64) or self.event_queue_bytes > 1 << 30) return error.InvalidConfig;
+        if (self.event_queue_bytes > 1 << 30) return error.InvalidConfig;
         if (self.stats_interval_ms < 10 or self.login_timeout_ms == 0) return error.InvalidConfig;
         if (self.max_negotiations == 0 or self.max_negotiations > 1024 or self.http_workers == 0 or self.http_workers > 1024) return error.InvalidConfig;
         if (self.receive_queue_bytes < nethernet.framing.maximum_segment_payload + 1 or self.receive_queue_bytes > 64 * 1024 * 1024) return error.InvalidConfig;
@@ -87,6 +87,8 @@ pub const Config = struct {
         if (self.bind_address) |address| if (address.len == 0 or address.len > 64) return error.InvalidConfig;
         const reserve = @as(usize, self.max_sessions) * Worker.obligation_bytes;
         if (reserve > self.event_queue_bytes / 4) return error.InvalidConfig;
+        // An empty ring has to take a whole frame plus the padding of a wrap, or the worker would wait forever
+        if (self.event_queue_bytes < 2 * (self.max_batch_bytes + Worker.message_slack) + reserve + 64) return error.InvalidConfig;
     }
 };
 

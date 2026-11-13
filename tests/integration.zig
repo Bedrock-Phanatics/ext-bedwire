@@ -381,6 +381,7 @@ test "the signaling endpoint reports the status PHP sets" {
 test "invalid configurations are refused" {
     try testing.expectError(error.InvalidConfig, start(.{ .max_sessions = 0 }));
     try testing.expectError(error.InvalidConfig, start(.{ .max_batch_bytes = 1024 }));
+    try testing.expectError(error.InvalidConfig, start(.{ .max_batch_bytes = 64 * 1024, .event_queue_bytes = 160 * 1024 }));
     try testing.expectError(error.InvalidConfig, start(.{ .port_range_begin = 5000 }));
     try testing.expectError(error.InvalidConfig, start(.{ .receive_queue_bytes = 1 }));
     try testing.expectError(error.InvalidConfig, start(.{ .protocol_version = 0 }));
@@ -528,4 +529,35 @@ test "trusted proxies pass authenticated signaling and logins fall back to PHP" 
     try support.login(host, client, session, .zlib);
     try testing.expectEqual(@as(u64, 1), host.statistics().login_fallbacks);
     try testing.expectEqual(@as(u64, 0), host.statistics().authentication_failures);
+}
+
+test "sends queued before stop go out before the sessions close" {
+    const host = try start(.{ .command_queue_bytes = 4 * 1024 * 1024, .packet_rate = 0 });
+    defer host.destroy();
+    var options = support.Client.options;
+    options.native.queue_bytes = 8 * 1024 * 1024;
+    const client = try support.Client.connectWith(host.io(), host.local_address.getPort(), options);
+    defer client.destroy();
+    const session = try support.expectConnect(host);
+    try support.login(host, client, session, .zlib);
+    client.clear();
+
+    // Noise in large batches is queued far faster than the worker compresses it, so most is still waiting at the stop
+    const per_batch = 50;
+    const batches = 60;
+    const storage = try gpa.alloc([1100]u8, per_batch);
+    defer gpa.free(storage);
+    var body: [1024]u8 = undefined;
+    host.io().random(&body);
+    var packet_list: [per_batch][]const u8 = undefined;
+    for (0..batches) |batch| {
+        for (storage, &packet_list, 0..) |*buffer, *packet, i| {
+            std.mem.writeInt(u32, body[0..4], @intCast(batch * per_batch + i), .little);
+            packet.* = packets.raw(buffer, packets.text, &body);
+        }
+        try host.send(session, &packet_list);
+    }
+    host.stop(5000);
+    const received = try client.expectPackets(batches * per_batch, 10_000);
+    for (received, 0..) |packet, i| try testing.expectEqual(@as(u32, @intCast(i)), std.mem.readInt(u32, packet[1..5], .little));
 }

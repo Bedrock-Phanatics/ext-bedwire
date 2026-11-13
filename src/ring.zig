@@ -67,6 +67,11 @@ pub const Ring = struct {
         self.tail.store(self.producer_tail, .seq_cst);
     }
 
+    /// Bytes before the producer wraps, where a record that doesn't fit leaves padding behind.
+    pub fn untilWrap(self: *const Ring) usize {
+        return self.storage.len - @as(usize, @intCast(self.producer_tail & self.mask));
+    }
+
     pub fn free(self: *const Ring) u64 {
         return self.storage.len - (self.producer_tail - self.producer_head);
     }

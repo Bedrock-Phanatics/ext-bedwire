@@ -119,7 +119,11 @@ pub const Worker = struct {
     pub const obligation_bytes = 32;
     /// One disconnect may wrap the ring and pad up to 16 bytes, which a lone session's 8 bytes of slack can't cover.
     const obligation_wrap_bytes = 16;
+    /// What one frame's events take beyond its bytes: a header and padding for each packet, and a login.
+    pub const message_slack = 32 * 1024;
     const commands_per_turn = 4096;
+    /// Sends are compressed here, so a turn takes a bounded share of them before it reads the network again.
+    const command_bytes_per_turn = 1024 * 1024;
     const messages_per_turn = 64;
     const drain_poll_ms = 10;
 
@@ -155,6 +159,7 @@ pub const Worker = struct {
     closed_bytes_received: u64 = 0,
     closed_bytes_sent: u64 = 0,
     next_tick_ms: u64 = 0,
+    next_drain_ms: u64 = 0,
     shutdown_deadline: ?u64 = null,
     stalled: bool = false,
     dirty: bool = false,
@@ -263,11 +268,6 @@ pub const Worker = struct {
     }
 
     pub fn destroy(self: *Worker) void {
-        for (self.active[0..self.active_len]) |index| {
-            const slot = &self.slots[index];
-            slot.session.deinit();
-            slot.connection.destroy();
-        }
         self.listener.destroy();
         if (self.lan) |*lan| lan.close();
         self.allocator.destroy(self.trust);
@@ -292,11 +292,15 @@ pub const Worker = struct {
             const token = self.shared.wakeup.prepare();
             // Set again below while the event ring is still short, otherwise a past stall would keep the loop from spinning.
             self.stalled = false;
-            var busy = self.processCommands();
+            const commands_left = self.processCommands();
             self.acceptConnections();
-            busy = self.pumpConnections() or busy;
+            const messages_left = self.pumpConnections();
 
             const now = self.clock();
+            if (self.draining != 0 and now >= self.next_drain_ms) {
+                self.drainClosing(now);
+                self.next_drain_ms = now + drain_poll_ms;
+            }
             if (now >= self.next_tick_ms) {
                 self.tick(now);
                 self.next_tick_ms = now + self.config.stats_interval_ms;
@@ -304,11 +308,16 @@ pub const Worker = struct {
             self.publishStats();
             self.publishEvents();
 
-            if (self.shutdown_deadline == null and self.shared.stop_requested.load(.seq_cst)) self.beginShutdown(now);
+            if (self.shutdown_deadline == null and self.shared.stop_requested.load(.seq_cst)) {
+                // PHP is waiting in stop by now, so what it queued before is all there will be
+                if (self.shared.stop_timeout_ms.load(.monotonic) != 0) while (self.processCommands()) {};
+                self.beginShutdown(now);
+            }
             if (self.shutdown_deadline) |end| {
                 if (self.active_len == 0 or now >= end) return;
             }
-            if (busy and !self.stalled) continue;
+            // A full event ring only holds back reading, sends still go out
+            if (commands_left or (messages_left and !self.stalled)) continue;
 
             self.shared.wakeup.wait(self.io, token, self.waitUntil(now)) catch {};
         }
@@ -319,7 +328,8 @@ pub const Worker = struct {
         if (self.draining != 0) until = @min(until, now + drain_poll_ms);
         if (self.shutdown_deadline) |end| until = @min(until, end);
         var earliest = std.Io.Clock.awake.now(self.io).addDuration(.fromMilliseconds(@intCast(until -| now)));
-        if (self.timed != 0) for (self.active[0..self.active_len]) |index| earlier(&earliest, self.slots[index].connection.waitDeadline());
+        // A stalled session isn't polled, so its deadline would only wake the loop to find it still due
+        if (self.timed != 0 and !self.stalled) for (self.active[0..self.active_len]) |index| earlier(&earliest, self.slots[index].connection.waitDeadline());
         if (self.lan) |lan| {
             earlier(&earliest, lan.discovery.tickDeadline());
             for (lan.listener.pending) |pending| if (pending) |connection| earlier(&earliest, connection.waitDeadline());
@@ -382,6 +392,13 @@ pub const Worker = struct {
 
     fn reserveObligations(self: *const Worker, extra: usize) usize {
         return (self.active_len + extra) * obligation_bytes + obligation_wrap_bytes;
+    }
+
+    /// Event space one more frame may take, counting the padding a wrap inside it leaves behind.
+    fn frameRoom(self: *const Worker) usize {
+        const frame = self.config.max_batch_bytes + message_slack;
+        const tail = self.shared.events.untilWrap();
+        return self.reserveObligations(0) + frame + if (tail < frame) tail else 0;
     }
 
     fn emit(self: *Worker, event: Event, len: usize) ?[]u8 {
@@ -637,14 +654,15 @@ pub const Worker = struct {
 
     fn pump(self: *Worker, slot: *Slot) Pumped {
         for (0..messages_per_turn) |_| {
-            if (slot.phase == .open and self.shared.events.available() < self.reserveObligations(0) + self.config.max_batch_bytes) {
-                // Leave messages queued so NetherNet pauses the sender until PHP catches up.
-                self.stats.event_stalls += 1;
-                self.stalled = true;
+            if (slot.phase == .open and self.shared.events.available() < self.frameRoom()) {
+                // The request stays set if this recheck passes, since another session may be waiting on it
                 self.shared.wants_events_space.store(true, .seq_cst);
-                if (self.shared.events.available() < self.reserveObligations(0) + self.config.max_batch_bytes) return .idle;
-                self.shared.wants_events_space.store(false, .seq_cst);
-                self.stalled = false;
+                if (self.shared.events.available() < self.frameRoom()) {
+                    // Leave messages queued so NetherNet pauses the sender until PHP catches up.
+                    self.stats.event_stalls += 1;
+                    self.stalled = true;
+                    return .idle;
+                }
             }
             const event = slot.connection.poll() catch {
                 self.release(slot);
@@ -826,10 +844,14 @@ pub const Worker = struct {
     fn processCommands(self: *Worker) bool {
         const ring = &self.shared.commands;
         defer ring.release();
-        if (self.draining != 0) self.drainClosing(self.clock());
-        for (0..commands_per_turn) |_| {
+        var bytes: usize = 0;
+        for (0..commands_per_turn) |done| {
             const record = ring.next() orelse return false;
+            bytes += record.bytes.len;
             self.dispatch(@fromBackingInt(@intCast(record.tag)), record.bytes);
+            if (bytes >= command_bytes_per_turn) break;
+            // PHP gets the space back while the rest is still being sent
+            if (done % 64 == 63) ring.release();
         }
         return !ring.isEmpty();
     }

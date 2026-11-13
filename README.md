@@ -150,7 +150,7 @@ $server->stop(2000);
 | `max_negotiations`, `http_workers` | 64, 32 | Concurrent joins in negotiation, and HTTP signaling workers. A request must arrive within 2 s |
 | `max_negotiations_per_address`, `max_connections_per_address` | 4, 8 | Per client IP (or IPv6 /64) caps on joins in negotiation and open HTTP connections. 0 is unlimited, loopback is exempt |
 | `max_batch_bytes` | 4 MiB | Largest decompressed batch in either direction |
-| `command_queue_bytes`, `event_queue_bytes` | 16 MiB | Ring sizes |
+| `command_queue_bytes`, `event_queue_bytes` | 16 MiB | Ring sizes. The event ring must hold at least two batches |
 | `receive_queue_bytes` | 1 MiB | Per-connection receive buffering before SCTP reads pause, at least 256 KiB |
 | `send_buffer_bytes` | 16 MiB | Per-connection unsent data before the peer is disconnected |
 | `port_range_begin`, `port_range_end` | any | UDP ports for WebRTC |
