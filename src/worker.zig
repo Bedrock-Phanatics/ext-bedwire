@@ -893,11 +893,11 @@ pub const Worker = struct {
     fn sendPackets(self: *Worker, slot: *Slot, packets: []const []const u8) !void {
         var len: usize = 0;
         for (packets) |packet| {
-            const envelope = bedwire.control.parse(packet) catch {
+            const header = bedwire.control.Header.read(packet) orelse {
                 self.stats.packets_rejected += 1;
                 continue;
             };
-            const kind = bedwire.PacketKind.fromId(envelope.header.packet_id);
+            const kind = bedwire.PacketKind.fromId(header.packet_id);
             if (!slot.session.state.permits(slot.session.features(), .server, kind)) {
                 self.stats.packets_rejected += 1;
                 continue;
@@ -910,7 +910,7 @@ pub const Worker = struct {
             try self.flushGroup(slot, len);
             len = 0;
             if (kind == .network_settings) {
-                slot.session.negotiateFromSettings(.{ .kind = kind, .id = envelope.header.packet_id, .bytes = packet }) catch |err| {
+                slot.session.negotiateFromSettings(.{ .kind = kind, .id = header.packet_id, .bytes = packet }) catch |err| {
                     self.fail(slot, .protocol);
                     return err;
                 };
