@@ -25,6 +25,7 @@ fn info(m: *phpz.ModuleEntry) void {
 
 fn finishRequest() !void {
     @import("php/scratch.zig").release();
+    @import("php/nbt.zig").finishRequest();
 }
 
 pub const ExceptionClass = phpz.Class("Bedwire\\Exception", struct {}, .{ .register = struct {

@@ -30,39 +30,51 @@ const tag_classes = [_][:0]const u8{
 
 const Slot = struct { entry: *zend.ClassEntry, offset: u32 };
 
-/// Class entries and property offsets, resolved once per call since user classes can change between requests.
+/// Class entries and property offsets, kept for the request since user classes can change between requests.
 const Classes = struct {
-    tags: [tag_classes.len]?Slot = @splat(null),
-    list_type: u32 = 0,
-    root: ?struct { entry: *zend.ClassEntry, root: u32, name: u32 } = null,
+    tags: [tag_classes.len]Slot,
+    list_type: u32,
+    root: struct { entry: *zend.ClassEntry, root: u32, name: u32 },
 
-    fn tag(self: *Classes, tag_type: TagType) !Slot {
-        const index = @backingInt(tag_type);
-        if (index == 0 or index >= tag_classes.len) return fail("unsupported tag type %d", .{@as(c_int, index)});
-        if (self.tags[index]) |slot| return slot;
-        const entry = try lookup(tag_classes[index]);
-        const slot: Slot = .{ .entry = entry, .offset = try offset(entry, "value") };
-        if (tag_type == .list) self.list_type = try offset(entry, "tagType");
-        self.tags[index] = slot;
-        return slot;
+    threadlocal var cached: ?Classes = null;
+
+    /// Autoloading runs user code, which may call back in here, so every class is found before scratch memory is in use.
+    fn get() !*const Classes {
+        if (cached == null) cached = try resolve();
+        return &cached.?;
     }
 
-    fn treeRoot(self: *Classes) !@typeInfo(@FieldType(Classes, "root")).optional.child {
-        if (self.root) |root| return root;
-        const entry = try lookup(namespace ++ "TreeRoot");
-        self.root = .{ .entry = entry, .root = try offset(entry, "root"), .name = try offset(entry, "name") };
-        return self.root.?;
+    fn resolve() !Classes {
+        var self: Classes = undefined;
+        for (tag_classes[1..], self.tags[1..]) |name, *slot| {
+            const entry = try lookup(name);
+            slot.* = .{ .entry = entry, .offset = try offset(entry, "value") };
+        }
+        self.tags[0] = self.tags[1];
+        self.list_type = try offset(self.tags[@backingInt(TagType.list)].entry, "tagType");
+        const tree = try lookup(namespace ++ "TreeRoot");
+        self.root = .{ .entry = tree, .root = try offset(tree, "root"), .name = try offset(tree, "name") };
+        return self;
+    }
+
+    fn tag(self: *const Classes, tag_type: TagType) !Slot {
+        const index = @backingInt(tag_type);
+        if (index == 0 or index >= tag_classes.len) return fail("unsupported tag type %d", .{@as(c_int, index)});
+        return self.tags[index];
     }
 
     /// Tag classes are final, so an exact class match identifies the tag type.
-    fn typeOf(self: *Classes, entry: *zend.ClassEntry) !TagType {
-        for (1..tag_classes.len) |index| {
-            const tag_type: TagType = @fromBackingInt(@as(u8, @intCast(index)));
-            if ((try self.tag(tag_type)).entry == entry) return tag_type;
+    fn typeOf(self: *const Classes, entry: *zend.ClassEntry) !TagType {
+        for (self.tags[1..], 1..) |slot, index| {
+            if (slot.entry == entry) return @fromBackingInt(@as(u8, @intCast(index)));
         }
         return fail("%s is not a pocketmine/nbt tag", .{entry.name().ptr});
     }
 };
+
+pub fn finishRequest() void {
+    Classes.cached = null;
+}
 
 fn lookup(name: [:0]const u8) !*zend.ClassEntry {
     return try zend.ClassEntry.lookup(name, true) orelse fail("class %s is not available", .{name.ptr});
@@ -102,7 +114,7 @@ fn parseOffset(data: []const u8, value: ?i64, arg: u32) !usize {
 }
 
 const Reader = struct {
-    classes: Classes = .{},
+    classes: *const Classes,
     unsigned_int_arrays: bool,
 
     fn tagObject(self: *Reader, tag: *const nbt.Tag, out: *c.zval) !void {
@@ -156,7 +168,7 @@ const Reader = struct {
     }
 
     fn treeRoot(self: *Reader, document: *const nbt.Document, out: *c.zval) !void {
-        const root = try self.classes.treeRoot();
+        const root = self.classes.root;
         var tag: c.zval = undefined;
         try self.tagObject(&document.root, &tag);
         var object: c.zval = undefined;
@@ -171,13 +183,16 @@ const Reader = struct {
     }
 };
 
+// A property slot keeps flags beside its type, which a whole-zval copy would overwrite with whatever the value carried
 fn replace(slot: *c.zval, value: c.zval) void {
     Zval.raw.release(slot);
-    slot.* = value;
+    slot.value = value.value;
+    slot.u1 = value.u1;
+    slot.u2.extra = 0;
 }
 
 const Writer = struct {
-    classes: Classes = .{},
+    classes: *const Classes,
     arena: std.mem.Allocator,
 
     const max_nesting = native.nbt.max_depth;
@@ -242,7 +257,7 @@ const Writer = struct {
 
     fn root(self: *Writer, raw: *c.zval) !nbt.Document {
         const zv = deref(raw);
-        const tree = try self.classes.treeRoot();
+        const tree = self.classes.root;
         if (!Zval.raw.is(zv, .object) or Zval.raw.asUnchecked(zv, .object).ptr().ce != tree.entry.ptr()) {
             return fail("expected a pocketmine\\nbt\\TreeRoot", .{});
         }
@@ -352,9 +367,9 @@ pub const Nbt = struct {
     pub fn readMultiple(data: []const u8, format: i64, max_depth: ?i64) !*zend.Array {
         const fmt = try parseFormat(format, 2);
         const opts = native.nbt.options(fmt, try parseDepth(max_depth, 3));
+        var reader: Reader = .{ .classes = try Classes.get(), .unsigned_int_arrays = fmt != .network };
         const arena = scratch.begin();
         defer scratch.end(arena);
-        var reader: Reader = .{ .unsigned_int_arrays = fmt != .network };
         var list = zend.Array.ListBuilder.init(1);
         errdefer list.finish().release();
         var from: usize = 0;
@@ -370,9 +385,10 @@ pub const Nbt = struct {
 
     pub fn write(root: *zend.Object, format: i64) !*zend.String {
         const opts = native.nbt.options(try parseFormat(format, 2), native.nbt.max_depth);
+        const classes = try Classes.get();
         const arena = scratch.begin();
         defer scratch.end(arena);
-        var writer: Writer = .{ .arena = arena.allocator() };
+        var writer: Writer = .{ .classes = classes, .arena = arena.allocator() };
         var zv = Zval.raw.init(.object, root);
         const document = try writer.root(&zv);
         return render(arena.allocator(), &.{document}, opts);
@@ -380,9 +396,10 @@ pub const Nbt = struct {
 
     pub fn writeHeadless(tag: *zend.Object, format: i64) !*zend.String {
         const opts = native.nbt.options(try parseFormat(format, 2), native.nbt.max_depth);
+        const classes = try Classes.get();
         const arena = scratch.begin();
         defer scratch.end(arena);
-        var writer: Writer = .{ .arena = arena.allocator() };
+        var writer: Writer = .{ .classes = classes, .arena = arena.allocator() };
         var zv = Zval.raw.init(.object, tag);
         const value = try writer.tagOf(&zv, 1);
         const len = nbt.encodedLength(value, opts) catch |err| return invalid(err);
@@ -395,9 +412,10 @@ pub const Nbt = struct {
 
     pub fn writeMultiple(roots: *zend.Array, format: i64) !*zend.String {
         const opts = native.nbt.options(try parseFormat(format, 2), native.nbt.max_depth);
+        const classes = try Classes.get();
         const arena = scratch.begin();
         defer scratch.end(arena);
-        var writer: Writer = .{ .arena = arena.allocator() };
+        var writer: Writer = .{ .classes = classes, .arena = arena.allocator() };
         const documents = try arena.allocator().alloc(nbt.Document, roots.len());
         var values = roots.fastValueIterator();
         for (documents) |*document| document.* = try writer.root(values.next().?);
@@ -408,10 +426,10 @@ pub const Nbt = struct {
 fn readInto(data: []const u8, format: i64, start: ?i64, max_depth: ?i64, out: *c.zval) !usize {
     const fmt = try parseFormat(format, 2);
     const from = try parseOffset(data, start, 3);
+    var reader: Reader = .{ .classes = try Classes.get(), .unsigned_int_arrays = fmt != .network };
     const arena = scratch.begin();
     defer scratch.end(arena);
     const parsed = nbt.parsePrefix(arena.allocator(), data[from..], native.nbt.options(fmt, try parseDepth(max_depth, 4))) catch |err| return invalid(err);
-    var reader: Reader = .{ .unsigned_int_arrays = fmt != .network };
     try reader.treeRoot(&parsed.document, out);
     return from + parsed.len;
 }
@@ -420,10 +438,10 @@ fn readHeadlessInto(data: []const u8, format: i64, tag_type: i64, start: ?i64, m
     const fmt = try parseFormat(format, 2);
     const kind = TagType.fromByte(std.math.cast(u8, tag_type) orelse 0xff) catch return exception.argumentValueError(3, "must be a tag type", .{});
     const from = try parseOffset(data, start, 4);
+    var reader: Reader = .{ .classes = try Classes.get(), .unsigned_int_arrays = fmt != .network };
     const arena = scratch.begin();
     defer scratch.end(arena);
     const parsed = nbt.parsePayload(arena.allocator(), data[from..], kind, native.nbt.options(fmt, try parseDepth(max_depth, 5))) catch |err| return invalid(err);
-    var reader: Reader = .{ .unsigned_int_arrays = fmt != .network };
     try reader.tagObject(&parsed.tag, out);
     return from + parsed.len;
 }

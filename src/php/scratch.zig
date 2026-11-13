@@ -2,7 +2,7 @@ const std = @import("std");
 
 threadlocal var arena: ?std.heap.ArenaAllocator = null;
 
-/// Per-thread scratch memory for one call; native allocations never outlive it, and calls do not nest.
+/// Per-thread scratch memory for one call. Calls don't nest, so nothing that runs user code may happen while it is held.
 pub fn begin() *std.heap.ArenaAllocator {
     if (arena == null) arena = .init(std.heap.c_allocator);
     return &arena.?;
