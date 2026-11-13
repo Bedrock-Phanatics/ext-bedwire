@@ -87,11 +87,17 @@ const Server = struct {
         const timeout = std.math.cast(u32, timeout_ms orelse 0) orelse return exception.argumentValueError(2, "must be between 0 and 4294967295", .{});
 
         host.waitEvents(timeout);
+        var event = host.nextEvent() orelse {
+            host.releaseEvents();
+            return Array.empty();
+        };
         var list = Array.ListBuilder.init(@as(u32, @min(max, 256)) * 3);
         var count: u32 = 0;
-        while (count < max) : (count += 1) {
-            const event = host.nextEvent() orelse break;
+        while (true) {
             appendEvent(&list, event);
+            count += 1;
+            if (count == max) break;
+            event = host.nextEvent() orelse break;
         }
         host.releaseEvents();
         return list.finish();
