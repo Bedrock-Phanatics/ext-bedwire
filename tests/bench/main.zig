@@ -119,7 +119,7 @@ fn session(io: std.Io) !void {
     var total: usize = 0;
     for (batch) |packet| total += packet.len;
 
-    var pool = try bedwire.BufferPool.init(allocator, .{ .max_frame_bytes = 4 * 1024 * 1024, .max_batch_bytes = 1024 * 1024, .max_packet_bytes = 1024 * 1024 }, .{ .rx_slots = 2, .tx_slots = 2 });
+    var pool = try bedwire.BufferPool.init(allocator, .{ .max_frame_bytes = 4 * 1024 * 1024, .max_batch_bytes = 1024 * 1024, .max_packet_bytes = 1024 * 1024 }, .{ .rx_slots = 2, .tx_slots = 2, .deflate_level = 1 });
     defer pool.deinit();
     const policy: bedwire.SessionPolicy = .{ .encryption = .disabled, .batch_header = false };
     inline for (.{ .deflate, .snappy, .none }) |algorithm| {

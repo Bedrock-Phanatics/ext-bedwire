@@ -188,17 +188,19 @@ Session batch, 17.5 KiB: 20 moves, 5 chat lines and 1 chunk.
 
 | Backend | On the wire | Encode | Encode + decode |
 | --- | --- | --- | --- |
-| libdeflate (default) | 2721 B | 66 µs | 92 µs |
-| std deflate | 2939 B | 116 µs | 150 µs |
-| snappy | 3971 B | 13 µs | 23 µs |
+| libdeflate level 1 (default) | 2884 B | 27 µs | 37 µs |
+| pure Zig deflate | 3027 B | 23 µs | 49 µs |
+| snappy | 3872 B | 11 µs | 16 µs |
+
+libdeflate level 3 makes the same batch 2720 B and takes 57 µs to encode it.
 
 NBT, a 2.6 KB chest block entity:
 
 | Operation | Time |
 | --- | --- |
 | Validate (`length`) | 0.6 µs |
-| Parse | 9.2 µs |
-| Write | 4.5 µs |
+| Parse | 7.7 µs |
+| Write | 4.1 µs |
 
 The command/event ring moves 41 M records/s across threads.
 
@@ -208,8 +210,8 @@ NBT, using the same pocketmine/nbt objects with byte-identical output:
 
 | Operation | pocketmine/nbt in PHP | `Bedwire\Nbt` | Speed-up |
 | --- | --- | --- | --- |
-| Write | 75 µs | 9.9 µs | 7.5× |
-| Read | 213 µs | 18 µs | 11.6× |
+| Write | 74 µs | 7.3 µs | 10× |
+| Read | 208 µs | 15 µs | 13.7× |
 
 ### End to end over NetherNet (loopback)
 
