@@ -13,8 +13,8 @@
             .hash = "bedwire-0.8.0-6vrYrWqSIQBQgDy9o-dfrnvgqexiGk7TTtn5c3oXSwjY",
         },
         .nethernet = .{
-            .url = "git+https://github.com/Bedrock-Phanatics/nethernet-zig#6fe98d2c5bd9db80dd725c317a1a3c0ca54ef0ec",
-            .hash = "nethernet-1.11.0-dprTqBT3DADXF6Bt5Gs4atZUonqiZyV28dU5MajspfH6",
+            .url = "git+https://github.com/Bedrock-Phanatics/nethernet-zig#ef3736fcf22de88e83f6d31da72cdde9b3279780",
+            .hash = "nethernet-1.11.1-dprTqOsJDQAyw3kdIYbylQClrB3klXYDVz6we0qMFLXy",
         },
         .nbt = .{
             .url = "git+https://github.com/Bedrock-Phanatics/nbt-zig#26d021f59412b9ab366c09471c443a5b69d53570",
