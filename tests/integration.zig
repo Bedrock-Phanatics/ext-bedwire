@@ -495,13 +495,17 @@ test "the unreliable channel works both ways when enabled" {
     try testing.expectError(error.EmptyBatch, host.sendUnreliable(joined.session, ""));
 }
 
-test "trusted proxies pass authenticated signaling and logins fall back to PHP" {
+test "authenticated signaling accepts a trusted proxy and rejects an unlisted identity" {
     const proxy = nethernet.IdentityKeyPair.generate(std.testing.io);
-    const der = bedwire.crypto.spki.encode(proxy.public_key);
+    var der = bedwire.crypto.spki.encode(proxy.public_key);
+    try testing.expect(std.mem.indexOfScalar(u8, &der, 0) != null);
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(&der, &digest, .{});
     // A named array, since config() would otherwise coerce the tuple into a temporary of its own frame
     const keys = [_][]const u8{&der};
     const host = try start(.{ .authentication = true, .trusted_identity_keys = &keys });
     defer host.destroy();
+    @memset(&der, 0);
 
     const token = try nethernet.identity.serverToken(gpa, proxy, std.Io.Clock.real.now(host.io()).toSeconds());
     defer gpa.free(token);
@@ -511,9 +515,8 @@ test "trusted proxies pass authenticated signaling and logins fall back to PHP" 
     const client = try support.Client.connectWith(host.io(), host.local_address.getPort(), options);
     defer client.destroy();
 
-    var digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(&der, &digest, .{});
-    const session = host_event: while (true) {
+    const deadline = support.Deadline.in(host.io(), 5000);
+    const session = host_event: while (!deadline.expired()) {
         const event = host.nextEvent() orelse {
             host.waitEvents(10);
             continue;
@@ -523,12 +526,19 @@ test "trusted proxies pass authenticated signaling and logins fall back to PHP" 
         try testing.expectEqualSlices(u8, &digest, event.connect.identity.?);
         try testing.expect(event.connect.issuer_verified);
         break :host_event event.connect.session;
-    };
+    } else return error.Timeout;
 
     // A login Microsoft did not sign reaches PHP, which accepts it itself.
     try support.login(host, client, session, .zlib);
     try testing.expectEqual(@as(u64, 1), host.statistics().login_fallbacks);
     try testing.expectEqual(@as(u64, 0), host.statistics().authentication_failures);
+
+    const unlisted = nethernet.IdentityKeyPair.generate(std.testing.io);
+    const unlisted_token = try nethernet.identity.serverToken(gpa, unlisted, std.Io.Clock.real.now(host.io()).toSeconds());
+    defer gpa.free(unlisted_token);
+    options.identity = .{ .key = unlisted, .token = unlisted_token };
+    try testing.expectError(error.Forbidden, support.Client.connectWith(host.io(), host.local_address.getPort(), options));
+    try testing.expectEqual(@as(?native.Delivered, null), host.nextEvent());
 }
 
 test "sends queued before stop go out before the sessions close" {

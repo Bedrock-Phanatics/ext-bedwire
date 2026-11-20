@@ -83,7 +83,7 @@ pub const Config = struct {
         if (self.ice_servers.len > max_ice_servers or self.trusted_identity_keys.len > max_trusted_keys) return error.InvalidConfig;
         for (self.ice_servers) |server| if (server.len == 0 or server.len > 512) return error.InvalidConfig;
         _ = nethernet.advertise.Addresses.parse(self.advertise_addresses) catch return error.InvalidConfig;
-        for (self.trusted_identity_keys) |key| if (key.len == 0 or key.len > 512) return error.InvalidConfig;
+        for (self.trusted_identity_keys) |key| _ = bedwire.crypto.spki.decode(key) catch return error.InvalidTrustedIdentityKey;
         if (self.bind_address) |address| if (address.len == 0 or address.len > 64) return error.InvalidConfig;
         const reserve = @as(usize, self.max_sessions) * Worker.obligation_bytes;
         if (reserve > self.event_queue_bytes / 4) return error.InvalidConfig;

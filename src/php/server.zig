@@ -50,6 +50,7 @@ const Server = struct {
 
         const host = native.Host.start(gpa, config) catch |err| return switch (err) {
             error.InvalidConfig => exception.argumentValueError(3, "contains an out-of-range value", .{}),
+            error.InvalidTrustedIdentityKey => exception.argumentValueError(3, "option \"trusted_identity_keys\" must contain valid P-384 DER public keys", .{}),
             else => fail("cannot start server: %s", .{@errorName(err).ptr}),
         };
         return .{ .host = host, .owner = std.Thread.getCurrentId() };
@@ -199,7 +200,7 @@ const Lists = struct {
     trusted_identity_keys: [native.max_trusted_keys][]const u8 = undefined,
 };
 
-fn stringList(value: *c.zval, comptime name: []const u8, out: anytype) ![]@TypeOf(out[0]) {
+fn stringList(value: *c.zval, comptime name: []const u8, out: anytype, comptime allow_nul: bool) ![]@TypeOf(out[0]) {
     if (!Zval.raw.is(value, .array)) return exception.argumentTypeError(3, "option \"" ++ name ++ "\" must be a list of strings", .{});
     var count: usize = 0;
     var items = Zval.raw.asUnchecked(value, .array).fastValueIterator();
@@ -208,8 +209,8 @@ fn stringList(value: *c.zval, comptime name: []const u8, out: anytype) ![]@TypeO
         if (!Zval.raw.is(item, .string)) return exception.argumentTypeError(3, "option \"" ++ name ++ "\" must be a list of strings", .{});
         if (count == out.len) return exception.argumentValueError(3, "option \"" ++ name ++ "\" has too many entries", .{});
         const text = Zval.raw.asUnchecked(item, .string);
-        if (text.len == 0 or std.mem.indexOfScalar(u8, text, 0) != null) return exception.argumentValueError(3, "option \"" ++ name ++ "\" has an empty or invalid entry", .{});
-        // Zend strings are NUL-terminated, so the bytes can be borrowed as C strings.
+        if (text.len == 0 or (!allow_nul and std.mem.indexOfScalar(u8, text, 0) != null)) return exception.argumentValueError(3, "option \"" ++ name ++ "\" has an empty or invalid entry", .{});
+        // Zend supplies a trailing NUL for options that need C strings.
         out[count] = if (@TypeOf(out[0]) == [:0]const u8) text.ptr[0..text.len :0] else text;
         count += 1;
     }
@@ -242,17 +243,17 @@ fn parseOptions(table: *Array, config: *native.Config, path: *[4096:0]u8, lists:
             continue;
         }
         if (std.mem.eql(u8, key, "ice_servers")) {
-            config.ice_servers = try stringList(value, "ice_servers", &lists.ice_servers);
+            config.ice_servers = try stringList(value, "ice_servers", &lists.ice_servers, false);
             continue;
         }
         if (std.mem.eql(u8, key, "advertise_addresses")) {
-            config.advertise_addresses = try stringList(value, "advertise_addresses", &lists.advertise_addresses);
+            config.advertise_addresses = try stringList(value, "advertise_addresses", &lists.advertise_addresses, false);
             _ = native.advertise.Addresses.parse(config.advertise_addresses) catch
                 return exception.argumentValueError(3, "option \"advertise_addresses\" must list distinct public IP addresses without ports", .{});
             continue;
         }
         if (std.mem.eql(u8, key, "trusted_identity_keys")) {
-            config.trusted_identity_keys = try stringList(value, "trusted_identity_keys", &lists.trusted_identity_keys);
+            config.trusted_identity_keys = try stringList(value, "trusted_identity_keys", &lists.trusted_identity_keys, true);
             continue;
         }
         if (std.mem.eql(u8, key, "protocol_version")) {

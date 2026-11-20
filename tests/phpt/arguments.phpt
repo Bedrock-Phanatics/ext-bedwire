@@ -58,13 +58,26 @@ attempt(fn() => $server->sendRawBatch(1, "	", 3));
 attempt(fn() => $server->sendUnreliable(1, str_repeat("a", 70000)));
 attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["ice_servers" => "stun:x"] + OPTIONS));
 attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["ice_servers" => [""]] + OPTIONS));
+attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["ice_servers" => ["stun:example.com\0:3478"]] + OPTIONS));
 attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["advertise_addresses" => "203.0.113.7"] + OPTIONS));
+attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["advertise_addresses" => ["203.0.113.7\0"]] + OPTIONS));
 attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["advertise_addresses" => ["203.0.113.7:19132"]] + OPTIONS));
 attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["advertise_addresses" => ["example.com"]] + OPTIONS));
 attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["advertise_addresses" => ["0.0.0.0"]] + OPTIONS));
 attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["advertise_addresses" => ["203.0.113.7", "203.0.113.7"]] + OPTIONS));
 attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["bind_address" => "not an ip"] + OPTIONS));
 attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["trusted_identity_keys" => array_fill(0, 65, "k")] + OPTIONS));
+$der = base64_decode("MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEr9s6nQZH+oL3/GQg4A/CKeiGZ+cVFFE7f2xz296IDz57TcCX/76VOCG74kJvHG5+daY2J6oQ8JjnX0XlaSge3duveaT3bY3u5PgQeeH3ShaEZRBC+/+ttDkxjOw/jgA0", true);
+attempt(function () use ($der) {
+    $trusted = new Bedwire\Server("127.0.0.1", 0, ["trusted_identity_keys" => [$der]] + VERSION);
+    var_dump(str_contains($der, "\0"), $trusted->isRunning());
+    $trusted->stop(0);
+});
+attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["trusted_identity_keys" => [42]] + OPTIONS));
+attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["trusted_identity_keys" => [""]] + OPTIONS));
+attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["trusted_identity_keys" => [substr($der, 0, -1)]] + OPTIONS));
+attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["trusted_identity_keys" => [$der . "\0"]] + OPTIONS));
+attempt(fn() => new Bedwire\Server("127.0.0.1", 0, ["trusted_identity_keys" => [substr($der, 0, 24) . str_repeat("\0", 96)]] + OPTIONS));
 attempt(fn() => $server->setStatus(str_repeat("a", 300), "level", 10));
 attempt(fn() => $server->setStatus("name", "level", -1));
 attempt(fn() => $server->setStatus("name", "level", 10, 3));
@@ -111,13 +124,23 @@ ValueError: Bedwire\Server::sendRawBatch(): Argument #3 ($offset) is past the en
 ValueError: Bedwire\Server::sendUnreliable(): Argument #2 ($payload) exceeds the maximum batch size
 TypeError: Bedwire\Server::__construct(): Argument #3 ($options) option "ice_servers" must be a list of strings
 ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "ice_servers" has an empty or invalid entry
+ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "ice_servers" has an empty or invalid entry
 TypeError: Bedwire\Server::__construct(): Argument #3 ($options) option "advertise_addresses" must be a list of strings
+ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "advertise_addresses" has an empty or invalid entry
 ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "advertise_addresses" must list distinct public IP addresses without ports
 ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "advertise_addresses" must list distinct public IP addresses without ports
 ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "advertise_addresses" must list distinct public IP addresses without ports
 ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "advertise_addresses" must list distinct public IP addresses without ports
 ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "bind_address" must be an IP address
 ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "trusted_identity_keys" has too many entries
+bool(true)
+bool(true)
+ok
+TypeError: Bedwire\Server::__construct(): Argument #3 ($options) option "trusted_identity_keys" must be a list of strings
+ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "trusted_identity_keys" has an empty or invalid entry
+ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "trusted_identity_keys" must contain valid P-384 DER public keys
+ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "trusted_identity_keys" must contain valid P-384 DER public keys
+ValueError: Bedwire\Server::__construct(): Argument #3 ($options) option "trusted_identity_keys" must contain valid P-384 DER public keys
 ValueError: Bedwire\Server::setStatus(): Argument #1 ($name) must be valid UTF-8 of at most 256 bytes
 ValueError: Bedwire\Server::setStatus(): Argument #3 ($maxPlayers) must not be negative
 ValueError: Bedwire\Server::setStatus(): Argument #4 ($gameType) must be between 0 and 2
